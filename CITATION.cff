@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use ChronoReset in your work, please cite it as below."
+title: "ChronoReset: A Literature-Grounded Control-Policy Experiment for Aging Intervention Scheduling"
+abstract: >-
+  ChronoReset is a discrete-time control-policy sandbox that tests whether
+  intervention *ordering* matters for a simulated patient tracked across six
+  Hallmarks of Aging, subject to cross-hallmark coupling rules grounded in
+  primary literature and tiered by strength of evidence. It compares greedy
+  worst-first scheduling against synergy-aware lookahead, round-robin,
+  fixed-priority, and random baselines.
+authors:
+  - family-names: "de Paiva Menezes de Sequeira"
+    given-names: "Manuel Afonso"
+    email: stardrako@gmail.com
+repository-code: "https://github.com/stardrako-create/ChronoReset"
+license: MIT
+keywords:
+  - aging
+  - hallmarks of aging
+  - control policy
+  - geroscience
+  - mTOR
+  - autophagy
+  - senescence
+  - telomere
+date-released: "2026-08-19"
