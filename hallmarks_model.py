@@ -10,17 +10,18 @@ ODE/SciML system -- the node names and coupling constraints here are the part
 worth getting right first; the math engine can replace this loop later
 without changing the node definitions.
 
-Covers 8 hallmarks (Lopez-Otin et al. 2023, Cell): deregulated nutrient-sensing
-(`mtor`), disabled macroautophagy (`autophagy_foxo`), chronic inflammation,
-telomere attrition, cellular senescence, mitochondrial dysfunction, genomic
-instability, and epigenetic alterations. The seventh (genomic instability) was
-added deliberately, not just to complete a checklist: it's the hallmark that
-determines whether aggressive intervention elsewhere (telomerase reactivation
-especially) is safe or just trades aging for cancer sooner. The eighth
-(epigenetic alterations, via partial OSK/OSKM reprogramming) carries the
-model's largest `cancer_risk` coupling on purpose -- rejuvenation and
-tumorigenesis sit on the same dose-response curve for this one, not on
-separate ones -- see `cancer_risk` in the side effects below.
+Covers all 12 hallmarks (Lopez-Otin et al. 2023, Cell): deregulated
+nutrient-sensing (`mtor`), disabled macroautophagy (`autophagy_foxo`), chronic
+inflammation, telomere attrition, cellular senescence, mitochondrial
+dysfunction, genomic instability, epigenetic alterations, loss of
+proteostasis, stem cell exhaustion, altered intercellular communication, and
+dysbiosis. Genomic instability was added deliberately, not just to complete a
+checklist: it's the hallmark that determines whether aggressive intervention
+elsewhere (telomerase reactivation especially) is safe or just trades aging
+for cancer sooner. Epigenetic alterations (via partial OSK/OSKM
+reprogramming) carries the model's largest `cancer_risk` coupling on purpose
+-- rejuvenation and tumorigenesis sit on the same dose-response curve for this
+one, not on separate ones -- see `cancer_risk` in the side effects below.
 
 Coupling coefficients are tiered by strength of evidence, not tuned to data:
   STEP_SIZE/2 -- direct mechanistic coupling or strong human interventional data
@@ -235,6 +236,12 @@ def intervene_epigenetic_alterations(h: Hallmark, state: PatientState) -> None:
     state.side_effects["cancer_risk"] = min(
         1.0, state.side_effects.get("cancer_risk", 0.0) + STEP_SIZE / 2
     )
+    # Cyclic OSKM in 12-month WT mice improved skeletal-muscle regeneration
+    # (PAX7+ satellite cell activation after cardiotoxin injury) and pancreatic
+    # beta-cell recovery after induced injury -- a measured functional effect
+    # on stem/progenitor competence, not just a plausible narrative (Ocampo
+    # et al. 2016, Cell).
+    _nudge(state, "stem_cell_exhaustion", -STEP_SIZE / 4)
 
 
 def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
@@ -261,6 +268,78 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     state.side_effects["cancer_risk"] = max(
         0.0, state.side_effects.get("cancer_risk", 0.0) - STEP_SIZE / 4
     )
+
+
+def intervene_proteostasis(h: Hallmark, state: PatientState) -> None:
+    """HSF1-dependent chaperone induction / ER-UPR support (chemical
+    chaperones, XBP1s-boosting therapy)."""
+    h.level = max(0.0, h.level - STEP_SIZE)
+    # Hsf1 deletion directly impairs HSC maintenance and proteostasis under ex
+    # vivo culture stress and aging -- causal, not just correlational
+    # (Kruta et al. 2021, PMID 34388375).
+    _nudge(state, "stem_cell_exhaustion", -STEP_SIZE / 4)
+    # Chaperone-mediated folding/proteasomal clearance and macroautophagy are
+    # distinct but overlapping routes for misfolded/aggregated protein --
+    # partial reinforcement, not redundant machinery (Hipp, Kasturi & Hartl
+    # 2019, Nat Rev Mol Cell Biol).
+    _nudge(state, "autophagy_foxo", -STEP_SIZE / 8)
+    # Protein aggregate accumulation is a documented proteotoxic-stress trigger
+    # for senescence entry -- context-specific, not a general mechanism.
+    _nudge(state, "cellular_senescence", -STEP_SIZE / 8)
+
+
+def intervene_stem_cell_exhaustion(h: Hallmark, state: PatientState) -> None:
+    """Niche-level rejuvenation -- PGE2-EP4 signaling restoring aged muscle
+    stem cell chromatin accessibility and cell-cycle re-entry (Cell Stem Cell
+    2025), exercise-driven satellite cell activation. Not stem cell transplant,
+    a distinct and far more invasive intervention category not modeled here."""
+    h.level = max(0.0, h.level - STEP_SIZE)
+    # Restoring a functional niche overlaps with clearing the senescent
+    # supporting cells that disrupt it -- partial, context-specific, not the
+    # direct human-RCT tier of the senolytic->inflammation coupling elsewhere.
+    _nudge(state, "cellular_senescence", -STEP_SIZE / 8)
+
+
+def intervene_intercellular_communication(h: Hallmark, state: PatientState) -> None:
+    """GH + DHEA + metformin thymic regeneration, TRIIM-trial-style (Fahy
+    et al. 2019) -- the endocrine-immune signaling axis left over once
+    inflammaging split out as its own hallmark (chronic_inflammation) in the
+    2023 revision."""
+    h.level = max(0.0, h.level - STEP_SIZE)
+    # TRIIM: 9 men, 50-65yo, 12 months of GH+DHEA+metformin -- MRI-confirmed
+    # thymic fat-to-lymphoid regeneration, epigenetic age reduced ~2.5 years
+    # across multiple clocks including GrimAge (Fahy et al. 2019, Aging Cell).
+    # A regenerated thymus restoring naive T-cell output plausibly dampens the
+    # oligoclonal, pro-inflammatory repertoire aging leaves behind -- causal
+    # narrative is established, but TRIIM measured epigenetic age and thymic
+    # imaging, not inflammatory cytokines directly, hence /4 not /2.
+    _nudge(state, "inflammation", -STEP_SIZE / 4)
+    # GH is proliferative and raises IGF-1; the model already treats elevated
+    # IGF-1/GH signaling as a cancer-risk driver via the inverse finding cited
+    # in intervene_mtor's Laron-syndrome evidence (GHR-deficient humans: ~17%
+    # cancer prevalence in matched relatives vs. 1 non-lethal case in the
+    # deficient group). Small, context-specific penalty: TRIIM itself was too
+    # small and short to detect a cancer signal, but the mechanism is real.
+    state.side_effects["cancer_risk"] = min(
+        1.0, state.side_effects.get("cancer_risk", 0.0) + STEP_SIZE / 8
+    )
+
+
+def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
+    """Young-donor fecal microbiota transplant (FMT) / high-diversity
+    microbiome restoration. Old-donor FMT does the reverse -- shortens
+    lifespan in fly/fish models and impairs cognition in rodents (Boehme
+    et al. 2021, Nat Aging) -- an asymmetry worth remembering even though it
+    isn't a separate branch in this model."""
+    h.level = max(0.0, h.level - STEP_SIZE)
+    # Restored gut barrier integrity reduces LPS/endotoxin translocation into
+    # circulation, which drives TLR4/NF-kB-dependent systemic inflammation --
+    # established mechanistic link, not yet at the human-RCT tier of the
+    # senolytic->inflammation coupling elsewhere in the model.
+    _nudge(state, "inflammation", -STEP_SIZE / 4)
+    # SCFA/butyrate restoration supports colonocyte mitochondrial function --
+    # real but tissue-localized, not organism-wide bioenergetics.
+    _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 8)
 
 
 # ---- exclusivity rules ---------------------------------------------------
@@ -314,6 +393,26 @@ def build_initial_state() -> PatientState:
             "epigenetic_alterations", level=0.50,
             intervention=intervene_epigenetic_alterations,
             label="Epigenetic alterations",
+        ),
+        "proteostasis": Hallmark(
+            "proteostasis", level=0.55,
+            intervention=intervene_proteostasis,
+            label="Loss of proteostasis",
+        ),
+        "stem_cell_exhaustion": Hallmark(
+            "stem_cell_exhaustion", level=0.60,
+            intervention=intervene_stem_cell_exhaustion,
+            label="Stem cell exhaustion",
+        ),
+        "intercellular_communication": Hallmark(
+            "intercellular_communication", level=0.50,
+            intervention=intervene_intercellular_communication,
+            label="Altered intercellular communication",
+        ),
+        "dysbiosis": Hallmark(
+            "dysbiosis", level=0.55,
+            intervention=intervene_dysbiosis,
+            label="Dysbiosis",
         ),
     }
     return PatientState(
@@ -462,7 +561,8 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
         "fixed priority (mtor/autophagy first)": make_policy_fixed_priority(
             ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
              "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability",
-             "epigenetic_alterations"]
+             "epigenetic_alterations", "proteostasis", "stem_cell_exhaustion",
+             "intercellular_communication", "dysbiosis"]
         ),
         "random (seed=0)": make_policy_random(0),
     }
@@ -502,6 +602,6 @@ if __name__ == "__main__":
         print(f"  {name}: {count}")
 
     print("\n" + "=" * 60)
-    print("Policy comparison (same initial state, all 8 hallmarks)")
+    print("Policy comparison (same initial state, all 12 hallmarks)")
     print("=" * 60)
     compare_policies()
