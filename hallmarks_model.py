@@ -10,13 +10,17 @@ ODE/SciML system -- the node names and coupling constraints here are the part
 worth getting right first; the math engine can replace this loop later
 without changing the node definitions.
 
-Covers 7 hallmarks (Lopez-Otin et al. 2023, Cell): deregulated nutrient-sensing
+Covers 8 hallmarks (Lopez-Otin et al. 2023, Cell): deregulated nutrient-sensing
 (`mtor`), disabled macroautophagy (`autophagy_foxo`), chronic inflammation,
-telomere attrition, cellular senescence, mitochondrial dysfunction, and
-genomic instability. The seventh was added deliberately, not just to complete
-a checklist: it's the hallmark that determines whether aggressive intervention
-elsewhere (telomerase reactivation especially) is safe or just trades aging
-for cancer sooner -- see `cancer_risk` in the side effects below.
+telomere attrition, cellular senescence, mitochondrial dysfunction, genomic
+instability, and epigenetic alterations. The seventh (genomic instability) was
+added deliberately, not just to complete a checklist: it's the hallmark that
+determines whether aggressive intervention elsewhere (telomerase reactivation
+especially) is safe or just trades aging for cancer sooner. The eighth
+(epigenetic alterations, via partial OSK/OSKM reprogramming) carries the
+model's largest `cancer_risk` coupling on purpose -- rejuvenation and
+tumorigenesis sit on the same dose-response curve for this one, not on
+separate ones -- see `cancer_risk` in the side effects below.
 
 Coupling coefficients are tiered by strength of evidence, not tuned to data:
   STEP_SIZE/2 -- direct mechanistic coupling or strong human interventional data
@@ -206,6 +210,33 @@ def intervene_mitochondrial_dysfunction(h: Hallmark, state: PatientState) -> Non
     _nudge(state, "genomic_instability", -STEP_SIZE / 8)
 
 
+def intervene_epigenetic_alterations(h: Hallmark, state: PatientState) -> None:
+    """Cyclic OSK(M) partial reprogramming -- interrupted before pluripotency
+    (Ocampo et al. 2016; Lu et al. 2020; Macip et al. 2024, AAV9-OSK)."""
+    h.level = max(0.0, h.level - STEP_SIZE)
+    # Cyclic OSKM restored H3K9me3/H4K20me3 heterochromatin and reduced gammaH2AX
+    # foci in the same dataset -- heterochromatin loss is itself a mechanism of
+    # genomic instability, not just a correlate (Ocampo et al. 2016, Cell).
+    _nudge(state, "genomic_instability", -STEP_SIZE / 4)
+    # Same dataset: senescence-associated genes (p21, p53-pathway, SASP factors
+    # MMP13/IL6) shifted toward younger patterns after cyclic OSKM.
+    _nudge(state, "cellular_senescence", -STEP_SIZE / 4)
+    # Reduced mitochondrial ROS accompanied the epigenetic remodeling in the
+    # same senescent/progeroid cells (Ocampo et al. 2016) -- smaller coefficient
+    # since the paper doesn't resolve direct vs. downstream causation.
+    _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 8)
+    # The strongest cancer_risk coupling in the model, deliberately. Unlike
+    # telomerase (an on-target mechanism with a dose-dependent side effect),
+    # OSK(M) rejuvenation and OSKM-driven pluripotency/teratoma formation sit on
+    # the *same* dose-response curve -- Takahashi & Yamanaka 2006 used teratoma
+    # formation as the functional proof the factors worked at all. Dropping
+    # c-MYC and cycling exposure (every study above) reduce but do not remove
+    # this; "no gross teratomas observed" in a finite cohort is not "safe."
+    state.side_effects["cancer_risk"] = min(
+        1.0, state.side_effects.get("cancer_risk", 0.0) + STEP_SIZE / 2
+    )
+
+
 def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     """NAD+/PARP-1 support in a DNA-repair-limited context (NR/NA in
     progeroid, repair-deficient mice, PMC9596940) -- distinct emphasis from
@@ -278,6 +309,11 @@ def build_initial_state() -> PatientState:
             "genomic_instability", level=0.45,
             intervention=intervene_genomic_instability,
             label="Genomic instability",
+        ),
+        "epigenetic_alterations": Hallmark(
+            "epigenetic_alterations", level=0.50,
+            intervention=intervene_epigenetic_alterations,
+            label="Epigenetic alterations",
         ),
     }
     return PatientState(
@@ -425,7 +461,8 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
         "round-robin": make_policy_round_robin(hallmark_names),
         "fixed priority (mtor/autophagy first)": make_policy_fixed_priority(
             ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
-             "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability"]
+             "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability",
+             "epigenetic_alterations"]
         ),
         "random (seed=0)": make_policy_random(0),
     }
@@ -465,6 +502,6 @@ if __name__ == "__main__":
         print(f"  {name}: {count}")
 
     print("\n" + "=" * 60)
-    print("Policy comparison (same initial state, all 7 hallmarks)")
+    print("Policy comparison (same initial state, all 8 hallmarks)")
     print("=" * 60)
     compare_policies()
