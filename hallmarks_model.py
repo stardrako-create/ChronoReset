@@ -333,8 +333,11 @@ def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
     isn't a separate branch in this model."""
     h.level = max(0.0, h.level - STEP_SIZE)
     # Restored gut barrier integrity reduces LPS/endotoxin translocation into
-    # circulation, which drives TLR4/NF-kB-dependent systemic inflammation --
-    # established mechanistic link, not yet at the human-RCT tier of the
+    # circulation, which drives TLR4/NF-kB-dependent systemic inflammation.
+    # A 2025 human RCT (prebiotics, n=200, JCI) improved frailty status, and a
+    # separate 12-month Mediterranean-diet human trial found microbiome shifts
+    # negatively correlated with CRP/IL-17 -- real human data now exists here,
+    # though not yet at the controlled-cytokine-endpoint tier of the
     # senolytic->inflammation coupling elsewhere in the model.
     _nudge(state, "inflammation", -STEP_SIZE / 4)
     # SCFA/butyrate restoration supports colonocyte mitochondrial function --
@@ -586,6 +589,109 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
         print(f"{name:<38} {doses:>6} {burden:>9.3f} {cancer_risk:>12.3f} {car_t:>10.3f}")
 
 
+# ---- continuous aging (steady-state maintenance) -------------------------
+# `run()` and `compare_policies()` above answer "can a policy clean up a
+# fixed initial mess?" -- they stop the moment every hallmark is under
+# threshold and never ask what happens next. Real aging doesn't stop: damage
+# keeps accruing while you intervene. This section asks the harder, more
+# honest question: can a policy hold the patient near/under threshold
+# *indefinitely*, when every hallmark also drifts back up a little every
+# step, treated or not -- i.e. is "amortal" even reachable as a maintenance
+# regime, not just as a one-time cleanup?
+#
+# AGING_RATE is a deliberately uniform, non-evidence-tiered constant. Unlike
+# the coupling coefficients above, there is no comparable per-hallmark
+# "background aging rate" literature to draw tiers from -- treat this as one
+# simplifying assumption, not a researched parameter, and the single biggest
+# thing to revisit if this section is taken further.
+AGING_RATE = STEP_SIZE / 10
+
+
+def _accrue_aging(state: PatientState, rate: float = AGING_RATE) -> None:
+    """Every hallmark drifts back up a little each step, whether or not it
+    was this step's target -- the generic, undifferentiated "aging keeps
+    happening" process every treated hallmark is racing against."""
+    for h in state.hallmarks.values():
+        h.level = min(1.0, h.level + rate)
+
+
+def run_continuous(
+    state: PatientState,
+    policy: Callable[[PatientState], "Hallmark | None"] = policy_greedy,
+    steps: int = 200,
+    aging_rate: float = AGING_RATE,
+    threshold: float = 0.1,
+) -> PatientState:
+    """Run with background aging active every step. There is no early stop
+    and no "done" state -- a policy either holds the patient near/under
+    threshold for the whole horizon or it doesn't, and that failure to keep
+    up *is* the finding, not an edge case to filter out."""
+    for step in range(1, steps + 1):
+        _accrue_aging(state, aging_rate)
+        state.cumulative_burden += sum(h.level for h in state.hallmarks.values())
+
+        target = policy(state)
+        if target is None:
+            break
+
+        before = target.level
+        state.doses[target.name] = state.doses.get(target.name, 0) + 1
+        target.intervention(target, state)
+        state.last_intervened = target.name
+        if step <= 5 or step % 20 == 0:
+            state.log.append(
+                f"Step {step}: intervened on '{target.label}' "
+                f"({before:.2f} -> {target.level:.2f})"
+            )
+
+    over = sum(1 for h in state.hallmarks.values() if h.level > threshold)
+    state.log.append(
+        f"After {steps} steps: {over}/{len(state.hallmarks)} hallmarks still "
+        f"above threshold ({threshold})."
+    )
+    return state
+
+
+def compare_policies_continuous(steps: int = 200, aging_rate: float = AGING_RATE) -> None:
+    """Same five policies, now racing continuous background aging instead of
+    cleaning up a fixed mess once. Reports time-averaged burden and how many
+    hallmarks are still above threshold at the end of the horizon -- there is
+    no "doses to convergence" here, by design, because nothing converges."""
+    hallmark_names = list(build_initial_state().hallmarks.keys())
+    policies = {
+        "greedy (worst-first)": policy_greedy,
+        "synergy-aware (1-step lookahead)": policy_synergy_greedy,
+        "round-robin": make_policy_round_robin(hallmark_names),
+        "fixed priority (mtor/autophagy first)": make_policy_fixed_priority(
+            ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
+             "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability",
+             "epigenetic_alterations", "proteostasis", "stem_cell_exhaustion",
+             "intercellular_communication", "dysbiosis"]
+        ),
+        "random (seed=0)": make_policy_random(0),
+    }
+
+    rows = []
+    for name, policy in policies.items():
+        state = run_continuous(build_initial_state(), policy=policy, steps=steps, aging_rate=aging_rate)
+        avg_burden = state.cumulative_burden / steps
+        final_total = sum(h.level for h in state.hallmarks.values())
+        over = sum(1 for h in state.hallmarks.values() if h.level > 0.1)
+        rows.append((
+            name,
+            avg_burden,
+            final_total,
+            over,
+            state.side_effects.get("cancer_risk", 0.0),
+        ))
+
+    header = f"{'policy':<38} {'avg_burden':>11} {'final_total':>12} {'#>0.1':>6} {'cancer_risk':>12}"
+    print(header)
+    print("-" * len(header))
+    for name, avg_burden, final_total, over, cancer_risk in sorted(rows, key=lambda r: r[1]):
+        print(f"{name:<38} {avg_burden:>11.3f} {final_total:>12.3f} {over:>6} {cancer_risk:>12.3f}")
+
+
 if __name__ == "__main__":
     state = build_initial_state()
     run(state, policy=policy_greedy)
@@ -605,3 +711,8 @@ if __name__ == "__main__":
     print("Policy comparison (same initial state, all 12 hallmarks)")
     print("=" * 60)
     compare_policies()
+
+    print("\n" + "=" * 60)
+    print("Continuous aging: can a policy hold the line indefinitely?")
+    print("=" * 60)
+    compare_policies_continuous()

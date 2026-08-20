@@ -80,6 +80,31 @@ fixed priority (mtor/autophagy first)      29    96.888        0.325      0.675
 
 **Ordering matters more, not less, as the model grows.** The gap between the best policy (synergy-aware, 21 doses) and the worst (fixed-priority, 29 doses) widened compared to the 8-hallmark result — more coupled nodes means more ways to pick badly. Greedy worst-first flips its relative position here: it now has the *fewest* doses of any policy (18, beating synergy-aware's 21) but the second-worst burden of the top three, the opposite tradeoff shape from the 8-hallmark run where it tied synergy-aware on doses. That reversal is itself informative — which policy "wins" depends on which axis you're optimizing for, and that ranking is not stable as the coupling graph gets denser. `cancer_risk` stays in the 0.28-0.39 range across every policy — no policy at 12 hallmarks manages to offset it to zero the way greedy did back when genomic instability was the only cancer-risk-coupled hallmark in the model; the more rejuvenation levers you add, the harder safety gets to buy back with genomic-stability support alone. Round-robin again stays close to greedy on doses despite using zero severity information — a repeated finding across every version of this model so far: the *existence* of the coupling structure does more work than the specific ordering strategy layered on top of it.
 
+## Continuous aging: is "amortal" even reachable as a maintenance regime?
+
+Everything above answers "can a policy clean up a fixed initial mess?" — it stops the moment every hallmark is under threshold and never asks what happens next. Real aging doesn't stop: damage keeps accruing while you intervene. `run_continuous()` adds a background `AGING_RATE` (`STEP_SIZE / 10`, applied uniformly to every hallmark every step, treated or not) and runs for a long horizon (200 steps) with no early stop — the question isn't "how many doses to convergence," it's "does the policy hold the line indefinitely, or does damage outpace treatment."
+
+```
+policy                                  avg_burden  final_total  #>0.1  cancer_risk
+-----------------------------------------------------------------------------------
+synergy-aware (1-step lookahead)             2.242        0.719      3        1.000
+greedy (worst-first)                         2.421        0.744      2        1.000
+random (seed=0)                              4.667        4.325      9        0.938
+round-robin                                  5.472        5.306      9        1.000
+fixed priority (mtor/autophagy first)        8.959        9.000      9        0.000
+```
+
+**No policy reaches "amortal." The best two (greedy, synergy-aware) hold most hallmarks near threshold but still leave 2-3 of 12 chronically above it, and both drive `cancer_risk` to the ceiling (1.000) doing so.** That's the concrete, model-level version of the tension this project keeps running into: staying young costs safety, and this experiment is the first one where that cost is paid in full, not partially offset the way genomic-instability support could partially offset telomerase's cost in the one-shot version.
+
+**Round-robin's earlier strength — competitive with greedy despite using zero severity information — collapses under continuous aging** (5.472 avg burden vs. greedy's 2.421, 9/12 hallmarks left above threshold vs. 2/12). The finding from the one-shot comparison ("which hallmark you treat matters less than whether the coupling exists at all") does not survive contact with a maintenance regime — severity-aware policies pull dramatically ahead once damage keeps arriving instead of sitting still to be cleaned up once.
+
+**Fixed-priority fails in a genuinely different, more informative way: it starves.** Because background aging guarantees `mtor` is essentially never at exactly zero, and the policy always returns the first non-zero hallmark in its fixed order, it ends up re-dosing `mtor` almost every single step for 200 steps and never rotates to the rest — final burden is nearly maxed (9.0) and `cancer_risk` sits at 0.000 not because the policy is safe, but because it never touches any of the levers that carry a cancer-risk cost. Zero risk here is a symptom of total neglect, not of good scheduling.
+
+> [!warning] Reading `cancer_risk = 1.000` honestly
+> The side-effect accounting (`min(1.0, ...)` clamps in every intervention function) was designed for the short one-shot regime and saturates at the ceiling for any policy that succeeds at long-term maintenance here — three of five policies hit exactly 1.000. That means this specific run **cannot currently distinguish** "greedy's cancer cost" from "synergy-aware's cancer cost" from each other once both are pegged at the ceiling; it can only tell you whether a policy hit the ceiling at all. An uncapped or cumulative-dose cancer-risk accounting would be the natural next fix if this section gets taken further — flagged here rather than papered over.
+>
+> `AGING_RATE` itself is a single uniform constant, not evidence-tiered like the coupling coefficients elsewhere in this model — there is no comparable per-hallmark "background aging rate" literature to draw from. Treat the *qualitative* findings above (ordering matters more under continuous aging; fixed-priority starves; no policy reaches amortal) as the result, not the specific numbers.
+
 ## Running it
 
 No dependencies beyond the standard library.
@@ -88,7 +113,7 @@ No dependencies beyond the standard library.
 python hallmarks_model.py
 ```
 
-Runs the greedy-policy trace once, then `compare_policies()` runs all five policies from the same initial state and prints the comparison table above.
+Runs the greedy-policy trace once, `compare_policies()` for the one-shot comparison, then `compare_policies_continuous()` for the continuous-aging comparison above.
 
 ## Limitations
 
