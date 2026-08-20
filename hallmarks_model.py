@@ -10,10 +10,13 @@ ODE/SciML system -- the node names and coupling constraints here are the part
 worth getting right first; the math engine can replace this loop later
 without changing the node definitions.
 
-Covers the 6 hallmarks in scope (Lopez-Otin et al. 2023, Cell): deregulated
-nutrient-sensing (`mtor`), disabled macroautophagy (`autophagy_foxo`), chronic
-inflammation, telomere attrition, cellular senescence, and mitochondrial
-dysfunction.
+Covers 7 hallmarks (Lopez-Otin et al. 2023, Cell): deregulated nutrient-sensing
+(`mtor`), disabled macroautophagy (`autophagy_foxo`), chronic inflammation,
+telomere attrition, cellular senescence, mitochondrial dysfunction, and
+genomic instability. The seventh was added deliberately, not just to complete
+a checklist: it's the hallmark that determines whether aggressive intervention
+elsewhere (telomerase reactivation especially) is safe or just trades aging
+for cancer sooner -- see `cancer_risk` in the side effects below.
 
 Coupling coefficients are tiered by strength of evidence, not tuned to data:
   STEP_SIZE/2 -- direct mechanistic coupling or strong human interventional data
@@ -99,6 +102,13 @@ def intervene_autophagy_foxo(h: Hallmark, state: PatientState) -> None:
     # Mitophagy is a subset of macroautophagy -- same PINK1/Parkin cargo into
     # canonical autophagosomal machinery (Ryu et al. 2016, Nat Med).
     _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 4)
+    # FOXO3 is the same molecule Lei et al. 2025 re-engineered for genomic
+    # stability (constitutively-nuclear via AKT-phosphosite knock-in) -- a
+    # weaker, non-engineered FOXO activation plausibly nudges the same axis,
+    # just without the precision of removing only 2 of 3 AKT-controlled
+    # switches. Animal/mechanistic tier, not the primate-trial tier the
+    # dedicated intervention below gets.
+    _nudge(state, "genomic_instability", -STEP_SIZE / 4)
     # Deliberately no senescence coupling: the autophagy-senescence axis is
     # sign-ambiguous -- autophagy suppresses senescence onset pre-arrest but is
     # co-opted to sustain SASP synthesis once senescence is established.
@@ -188,6 +198,38 @@ def intervene_mitochondrial_dysfunction(h: Hallmark, state: PatientState) -> Non
     # SASP lacks the IL-1 arm, which is why the inflammation coupling above is
     # kept smaller than the senescence one.
     _nudge(state, "cellular_senescence", -STEP_SIZE / 4)
+    # PARP-1 (DNA repair) and sirtuins (mito health) draw from the same NAD+
+    # pool -- real resource competition, not two independent declines
+    # (PARP-1-/- mice: shorter lifespan AND accelerated carcinogenesis,
+    # PMC2672038). NAD+ repletion for mitochondria plausibly helps repair
+    # capacity too, from the one pool, not "more NAD+" out of nowhere.
+    _nudge(state, "genomic_instability", -STEP_SIZE / 8)
+
+
+def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
+    """NAD+/PARP-1 support in a DNA-repair-limited context (NR/NA in
+    progeroid, repair-deficient mice, PMC9596940) -- distinct emphasis from
+    the mitochondrial NAD+ intervention above (repair capacity, not
+    bioenergetics), same shared pool."""
+    h.level = max(0.0, h.level - STEP_SIZE)
+    # Same shared-pool logic in reverse -- PARP-1 support plausibly helps
+    # sirtuin-dependent mitochondrial maintenance too, smaller effect since
+    # this is the repair-focused, not biogenesis-focused, intervention.
+    _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 8)
+    # Unresolved DNA damage response signaling (persistent gammaH2AX/53BP1)
+    # is the direct trigger for p53/p21-dependent senescence entry -- this
+    # hallmark is causally upstream of cellular_senescence, not just
+    # correlated with it.
+    _nudge(state, "cellular_senescence", -STEP_SIZE / 4)
+    # The offsetting term to telomere_attrition's cancer_risk cost. Lei et al.
+    # 2025: precise FOXO3 re-engineering gave genomic stability + zero
+    # tumorigenicity over 44 weeks in aged primates -- the plausible mechanism
+    # for *why* telomerase reactivation can be made safer is pairing it with
+    # genomic-stability support, not avoiding telomerase. Deliberately modest:
+    # this offsets, it doesn't cancel out repeated telomerase dosing for free.
+    state.side_effects["cancer_risk"] = max(
+        0.0, state.side_effects.get("cancer_risk", 0.0) - STEP_SIZE / 4
+    )
 
 
 # ---- exclusivity rules ---------------------------------------------------
@@ -231,6 +273,11 @@ def build_initial_state() -> PatientState:
             "mitochondrial_dysfunction", level=0.50,
             intervention=intervene_mitochondrial_dysfunction,
             label="Mitochondrial dysfunction",
+        ),
+        "genomic_instability": Hallmark(
+            "genomic_instability", level=0.45,
+            intervention=intervene_genomic_instability,
+            label="Genomic instability",
         ),
     }
     return PatientState(
@@ -378,7 +425,7 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
         "round-robin": make_policy_round_robin(hallmark_names),
         "fixed priority (mtor/autophagy first)": make_policy_fixed_priority(
             ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
-             "cellular_senescence", "mitochondrial_dysfunction"]
+             "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability"]
         ),
         "random (seed=0)": make_policy_random(0),
     }
@@ -418,6 +465,6 @@ if __name__ == "__main__":
         print(f"  {name}: {count}")
 
     print("\n" + "=" * 60)
-    print("Policy comparison (same initial state, all 6 hallmarks)")
+    print("Policy comparison (same initial state, all 7 hallmarks)")
     print("=" * 60)
     compare_policies()

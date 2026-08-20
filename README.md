@@ -8,7 +8,7 @@ This is deliberately **not** a mechanistic aging model. It doesn't try to be bio
 
 ## The setup
 
-Six hallmarks (López-Otín et al. 2023, *Cell*, "Hallmarks of aging: An expanding universe"), each a dysfunction level in `[0, 1]`:
+Seven hallmarks (López-Otín et al. 2023, *Cell*, "Hallmarks of aging: An expanding universe"), each a dysfunction level in `[0, 1]`:
 
 - **Deregulated nutrient-sensing** (`mtor` / `autophagy_foxo`) — the mTOR/AMPK/FOXO axis
 - **Disabled macroautophagy**
@@ -16,6 +16,7 @@ Six hallmarks (López-Otín et al. 2023, *Cell*, "Hallmarks of aging: An expandi
 - **Telomere attrition**
 - **Cellular senescence**
 - **Mitochondrial dysfunction**
+- **Genomic instability** — added deliberately, not to complete a checklist: it's the hallmark that decides whether aggressive intervention elsewhere is safe or just trades aging for cancer sooner (see below)
 
 Each has an intervention function (rapamycin-style mTOR inhibition, fasting/spermidine-style autophagy induction, anti-inflammatory, telomerase activation, senolytic clearance, NAD+/mitophagy induction). Interventions don't just move their own node — they nudge coupled nodes, with **coefficients tiered by strength of evidence**, not fitted to data:
 
@@ -36,6 +37,7 @@ Each has an intervention function (rapamycin-style mTOR inhibition, fasting/sper
 - **Mitochondrial dysfunction → senescence/inflammation (`/4`)**: MiDAS (mitochondrial dysfunction-associated senescence) and mitophagy curtailing cytosolic-mtDNA-driven cGAS-STING activation (Fang et al. 2024, *Nat Commun*).
 - **Senolytic "hit-and-run" dosing**: modeled as reduced efficacy on immediate repeat, not a block — matches the intermittent dosing paradigm validated in mouse senolytic trials (Xu et al. 2018; Justice et al. 2019).
 - **NAD+ floor effect**: mitochondrial intervention has reduced efficacy above a threshold, matching the finding that NAD+ repletion doesn't improve already-healthy mitochondria, only depleted ones (Mills et al. 2016, *Cell Metab*).
+- **Genomic instability offsets `cancer_risk`, it doesn't just accumulate more of it**: precise FOXO3 re-engineering (biallelic knock-in removing 2 of 3 AKT phosphorylation sites, making it constitutively nuclear) gave genomic stability, oxidative/genotoxic stress resistance, and *zero* tumorigenicity over 44 weeks in aged primates (Lei et al. 2025, *Cell*; OA companion in *Cell Regeneration*). The plausible mechanism for making telomerase reactivation safer isn't avoiding it — it's pairing it with genomic-stability support. PARP-1 and mitochondrial sirtuins draw from the same NAD+ pool (PARP-1−/− mice: shorter lifespan *and* accelerated carcinogenesis, not a tradeoff-free shortcut), so this hallmark is coupled to `mitochondrial_dysfunction` as well as to `cancer_risk`.
 
 ## Lifestyle levers on the same nodes (research done, not yet in the model)
 
@@ -55,18 +57,18 @@ While doing this pass, a second, more applied framing kept surfacing: instead of
 
 ## The actual result: does ordering matter?
 
-Five policies, same starting patient, same coupling rules:
+Five policies, same starting patient, same coupling rules, now with all 7 hallmarks:
 
 ```
 policy                                  doses    burden  cancer_risk  car_t_fit
-synergy-aware (1-step lookahead)           12    20.075        0.075      0.675
-round-robin                                12    21.325        0.025      0.550
-greedy (worst-first)                       11    22.188        0.025      0.550
-random (seed=0)                            14    25.931        0.075      0.675
-fixed priority (mtor/autophagy first)      17    26.513        0.075      0.675
+synergy-aware (1-step lookahead)           13    23.400        0.075      0.675
+round-robin                                11    25.219        0.025      0.550
+greedy (worst-first)                       11    26.088        0.000      0.550
+random (seed=0)                            16    32.625        0.075      0.675
+fixed priority (mtor/autophagy first)      18    32.738        0.013      0.675
 ```
 
-**Ordering matters, but it's a tradeoff, not a clean win.** Synergy-aware lookahead (treat whatever helps the whole system most, not just the worst node) minimizes total patient burden — but gets there by re-dosing telomerase more, which is exactly the side effect the model penalizes (`cancer_risk` 0.075 vs 0.025). Greedy worst-first — never actually validated before this — turns out to be a reasonable point on the burden-vs-safety frontier: fewest doses, near-best burden, avoids the extra safety cost. Round-robin, with *zero* information about severity, nearly matches greedy — meaning in this coupling structure, which hallmark you treat matters less than whether the coupling exists at all. Fixed-priority (always clear mTOR/autophagy first regardless of severity) is clearly worst.
+**Ordering matters, but it's a tradeoff, not a clean win.** Synergy-aware lookahead (treat whatever helps the whole system most, not just the worst node) minimizes total patient burden — but gets there by re-dosing telomerase more, which is exactly the side effect the model penalizes. Greedy worst-first — never actually validated before this — turns out to be a reasonable point on the burden-vs-safety frontier: fewest doses, near-best burden, and with genomic instability now in the mix, its `cancer_risk` fully offsets to **0.000** — enough genomic-stability treatment happened along the way to fully cancel the telomerase cost in this run, the concrete version of the "pair telomerase with genomic-stability support" mechanism above. Round-robin, with *zero* information about severity, stays competitive on doses — meaning in this coupling structure, which hallmark you treat matters less than whether the coupling exists at all. Fixed-priority (always clear mTOR/autophagy first regardless of severity) is clearly worst on both doses and burden.
 
 ## Running it
 
