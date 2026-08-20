@@ -91,6 +91,19 @@ def _nudge(state: PatientState, name: str, delta: float) -> None:
         h.level = min(1.0, max(0.0, h.level + delta))
 
 
+def _nudge_cancer_risk(state: PatientState, delta: float) -> None:
+    """Like _nudge, but also accumulates an uncapped raw tally in
+    side_effects["cancer_risk_uncapped"]. The clamped hallmark level is what
+    policies act on and what "cancer_risk" means everywhere else in this
+    module -- but once several policies all peg that clamped level at 1.0
+    under continuous aging (see README), the clamped number alone can't tell
+    them apart from each other. The uncapped tally can."""
+    _nudge(state, "cancer_risk", delta)
+    state.side_effects["cancer_risk_uncapped"] = (
+        state.side_effects.get("cancer_risk_uncapped", 0.0) + delta
+    )
+
+
 # ---- intervention functions -------------------------------------------
 # Each intervention nudges its own hallmark down and may also nudge coupled
 # hallmarks/side-effects. Coupling signs and magnitudes are set from the
@@ -177,7 +190,7 @@ def intervene_telomere_attrition(h: Hallmark, state: PatientState) -> None:
     # promoter-mutant reactivation ~85-90% of human cancers use: the first dose
     # is free, sustained activity is not.
     extra_doses = max(0, state.doses.get("telomere_attrition", 1) - 1)
-    _nudge(state, "cancer_risk", extra_doses * STEP_SIZE / 10)
+    _nudge_cancer_risk(state, extra_doses * STEP_SIZE / 10)
 
 
 def intervene_cellular_senescence(h: Hallmark, state: PatientState) -> None:
@@ -241,7 +254,7 @@ def intervene_epigenetic_alterations(h: Hallmark, state: PatientState) -> None:
     # formation as the functional proof the factors worked at all. Dropping
     # c-MYC and cycling exposure (every study above) reduce but do not remove
     # this; "no gross teratomas observed" in a finite cohort is not "safe."
-    _nudge(state, "cancer_risk", STEP_SIZE / 2)
+    _nudge_cancer_risk(state, STEP_SIZE / 2)
     # Cyclic OSKM in 12-month WT mice improved skeletal-muscle regeneration
     # (PAX7+ satellite cell activation after cardiotoxin injury) and pancreatic
     # beta-cell recovery after induced injury -- a measured functional effect
@@ -271,7 +284,7 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     # for *why* telomerase reactivation can be made safer is pairing it with
     # genomic-stability support, not avoiding telomerase. Deliberately modest:
     # this offsets, it doesn't cancel out repeated telomerase dosing for free.
-    _nudge(state, "cancer_risk", -STEP_SIZE / 4)
+    _nudge_cancer_risk(state, -STEP_SIZE / 4)
 
 
 def intervene_proteostasis(h: Hallmark, state: PatientState) -> None:
@@ -324,7 +337,7 @@ def intervene_intercellular_communication(h: Hallmark, state: PatientState) -> N
     # cancer prevalence in matched relatives vs. 1 non-lethal case in the
     # deficient group). Small, context-specific penalty: TRIIM itself was too
     # small and short to detect a cancer signal, but the mechanism is real.
-    _nudge(state, "cancer_risk", STEP_SIZE / 8)
+    _nudge_cancer_risk(state, STEP_SIZE / 8)
 
 
 def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
@@ -367,6 +380,9 @@ def intervene_car_t_therapy(h: Hallmark, state: PatientState) -> None:
     fitness = state.side_effects.get("car_t_fitness", 0.3)
     effect = STEP_SIZE * (0.5 + fitness / 2)
     h.level = max(0.0, h.level - effect)
+    state.side_effects["cancer_risk_uncapped"] = (
+        state.side_effects.get("cancer_risk_uncapped", 0.0) - effect
+    )
     # Cytokine release syndrome (CRS) is not a rare edge case of CAR-T therapy,
     # it is the expected, extensively documented on-target/off-tumor
     # inflammatory response -- IL-6-driven, standard of care is tocilizumab
@@ -510,6 +526,50 @@ def policy_synergy_greedy(state: PatientState) -> Hallmark | None:
     return best
 
 
+def make_policy_lookahead(depth: int) -> Callable[[PatientState], "Hallmark | None"]:
+    """Generalizes policy_synergy_greedy from 1-step to N-step lookahead: for
+    each candidate this step, simulate taking it, then recursively pick the
+    best continuation up to `depth` steps deep, scoring by total system-wide
+    dysfunction reduction summed over the whole simulated window. depth=1
+    reproduces policy_synergy_greedy exactly (just recomputed less
+    efficiently) -- this exists to test whether seeing further ahead than one
+    step closes more of the gap synergy-aware already opened up on greedy,
+    at the cost of branching-factor^depth simulations per real decision."""
+
+    def best_score(state: PatientState, remaining: int) -> float:
+        candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+        if not candidates or remaining == 0:
+            return 0.0
+        best = float("-inf")
+        for h in candidates:
+            trial = copy.deepcopy(state)
+            before = sum(x.level for x in state.hallmarks.values())
+            trial_h = trial.hallmarks[h.name]
+            trial_h.intervention(trial_h, trial)
+            after = sum(x.level for x in trial.hallmarks.values())
+            score = (before - after) + best_score(trial, remaining - 1)
+            best = max(best, score)
+        return best
+
+    def policy(state: PatientState) -> Hallmark | None:
+        candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+        if not candidates:
+            return None
+        best_h, best_score_val = None, float("-inf")
+        for h in candidates:
+            trial = copy.deepcopy(state)
+            before = sum(x.level for x in state.hallmarks.values())
+            trial_h = trial.hallmarks[h.name]
+            trial_h.intervention(trial_h, trial)
+            after = sum(x.level for x in trial.hallmarks.values())
+            score = (before - after) + best_score(trial, depth - 1)
+            if score > best_score_val:
+                best_h, best_score_val = h, score
+        return best_h
+
+    return policy
+
+
 def make_policy_round_robin(order: list[str]) -> Callable[[PatientState], "Hallmark | None"]:
     """Cycle through hallmarks in a fixed order regardless of severity --
     the "no information" baseline: does knowing which hallmark is worst
@@ -604,6 +664,7 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
              "intercellular_communication", "dysbiosis", "cancer_risk"]
         ),
         "random (seed=0)": make_policy_random(0),
+        "2-step lookahead": make_policy_lookahead(2),
     }
 
     rows = []
@@ -649,6 +710,11 @@ def _accrue_aging(state: PatientState, rate: float = AGING_RATE) -> None:
     happening" process every treated hallmark is racing against."""
     for h in state.hallmarks.values():
         h.level = min(1.0, h.level + rate)
+    # Keep the uncapped cancer_risk tally consistent with the clamped level:
+    # background aging pushes it up here too, just like every other hallmark.
+    state.side_effects["cancer_risk_uncapped"] = (
+        state.side_effects.get("cancer_risk_uncapped", 0.0) + rate
+    )
 
 
 def run_continuous(
@@ -707,6 +773,8 @@ def compare_policies_continuous(steps: int = 200, aging_rate: float = AGING_RATE
         "random (seed=0)": make_policy_random(0),
     }
 
+    policies["2-step lookahead"] = make_policy_lookahead(2)
+
     rows = []
     for name, policy in policies.items():
         state = run_continuous(build_initial_state(), policy=policy, steps=steps, aging_rate=aging_rate)
@@ -719,13 +787,20 @@ def compare_policies_continuous(steps: int = 200, aging_rate: float = AGING_RATE
             final_total,
             over,
             state.hallmarks["cancer_risk"].level,
+            state.side_effects.get("cancer_risk_uncapped", 0.0),
         ))
 
-    header = f"{'policy':<38} {'avg_burden':>11} {'final_total':>12} {'#>0.1':>6} {'cancer_risk':>12}"
+    header = (
+        f"{'policy':<38} {'avg_burden':>11} {'final_total':>12} {'#>0.1':>6} "
+        f"{'cancer_risk':>12} {'uncapped':>9}"
+    )
     print(header)
     print("-" * len(header))
-    for name, avg_burden, final_total, over, cancer_risk in sorted(rows, key=lambda r: r[1]):
-        print(f"{name:<38} {avg_burden:>11.3f} {final_total:>12.3f} {over:>6} {cancer_risk:>12.3f}")
+    for name, avg_burden, final_total, over, cancer_risk, uncapped in sorted(rows, key=lambda r: r[1]):
+        print(
+            f"{name:<38} {avg_burden:>11.3f} {final_total:>12.3f} {over:>6} "
+            f"{cancer_risk:>12.3f} {uncapped:>9.3f}"
+        )
 
 
 if __name__ == "__main__":

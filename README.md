@@ -72,10 +72,11 @@ While doing this pass, a second, more applied framing kept surfacing: instead of
 
 ## The actual result: does ordering matter?
 
-Five policies, same starting patient, same coupling rules, now with all 12 hallmarks plus the CAR-T pillar:
+Six policies now, same starting patient, same coupling rules, all 12 hallmarks plus the CAR-T pillar — `make_policy_lookahead(depth)` generalizes synergy-aware from 1-step to N-step simulated lookahead, added specifically to test whether seeing further ahead closes more of the gap 1-step lookahead already opened up on greedy:
 
 ```
 policy                                  doses    burden  cancer_risk  car_t_fit
+2-step lookahead                           25    68.894        0.000      0.675
 synergy-aware (1-step lookahead)           28    70.075        0.000      0.675
 greedy (worst-first)                       20    72.744        0.081      0.550
 round-robin                                25    75.963        0.000      0.550
@@ -83,34 +84,37 @@ random (seed=0)                            31    95.922        0.000      0.550
 fixed priority (mtor/autophagy first)      34   101.187        0.000      0.675
 ```
 
-**Making cancer risk directly treatable closes almost all of the safety gap in this regime.** `cancer_risk` drops from a 0.28-0.39 range (12 hallmarks, no CAR-T) to 0.000-0.081 across every policy — four of five reach exactly zero. Greedy is the interesting exception: it still finishes with a small residual (0.081) because it stops the instant every hallmark crosses the 0.1 threshold, and doesn't keep dosing cancer_risk past "good enough" the way the slower policies incidentally do by running more total steps before everything converges together. Doses went up for every policy (greedy 18→20, synergy-aware 21→28) — treating a 13th node costs doses, but here it buys back almost the entire cancer-risk cost from having 12 hallmarks worth of rejuvenation levers active.
+**Making cancer risk directly treatable closes almost all of the safety gap in this regime.** `cancer_risk` drops from a 0.28-0.39 range (12 hallmarks, no CAR-T) to 0.000-0.081 across every policy. Greedy is the interesting exception: it still finishes with a small residual (0.081) because it stops the instant every hallmark crosses the 0.1 threshold, and doesn't keep dosing cancer_risk past "good enough" the way the slower policies incidentally do by running more total steps before everything converges together.
+
+**Deeper lookahead is a clean, uncomplicated win here**: 2-step beats 1-step synergy-aware on *both* axes at once (25 doses vs 28, 68.894 burden vs 70.075) — the extra planning depth pays for itself in this regime, not just in theory.
 
 ## Continuous aging: is "amortal" even reachable as a maintenance regime?
 
 Everything above answers "can a policy clean up a fixed initial mess?" — it stops the moment every hallmark is under threshold and never asks what happens next. Real aging doesn't stop: damage keeps accruing while you intervene. `run_continuous()` adds a background `AGING_RATE` (`STEP_SIZE / 10`, applied uniformly to every hallmark every step, treated or not) and runs for a long horizon (200 steps) with no early stop — the question isn't "how many doses to convergence," it's "does the policy hold the line indefinitely, or does damage outpace treatment."
 
 ```
-policy                                  avg_burden  final_total  #>0.1  cancer_risk
------------------------------------------------------------------------------------
-synergy-aware (1-step lookahead)             3.295        1.594      3        1.000
-random (seed=0)                              6.520        5.044      9        1.000
-round-robin                                  6.662        6.450      9        1.000
-greedy (worst-first)                         8.744       10.156     13        0.900
-fixed priority (mtor/autophagy first)        9.861       10.000     10        1.000
+policy                                  avg_burden  final_total  #>0.1  cancer_risk  uncapped
+-----------------------------------------------------------------------------------------------
+synergy-aware (1-step lookahead)             3.295        1.594      3        1.000    16.181
+2-step lookahead                             3.471        1.850      3        1.000    17.013
+random (seed=0)                              6.520        5.044      9        1.000     6.891
+round-robin                                  6.662        6.450      9        1.000     5.859
+greedy (worst-first)                         8.744       10.156     13        0.900     2.484
+fixed priority (mtor/autophagy first)        9.861       10.000     10        1.000     5.000
 ```
 
-**No policy reaches "amortal" — and adding a treatable cancer pillar made greedy dramatically worse, not better.** This is the single most informative result to come out of this model so far. With 12 hallmarks and no CAR-T pillar, greedy was competitive (2.421 avg burden, 2/12 above threshold). Adding a 13th treatable node — one whose own treatment carries a real `inflammation` cost — flips greedy from second-best to worst-but-one: 8.744 avg burden, **13/13 hallmarks above threshold**, worse than even fixed-priority's starvation failure.
+**No policy reaches "amortal."** With 12 hallmarks and no CAR-T pillar, greedy was competitive (2.421 avg burden, 2/12 above threshold). Adding a 13th treatable node — one whose own treatment carries a real `inflammation` cost — flips greedy to a near-total failure: 8.744 avg burden, **13/13 hallmarks above threshold**, worse than even fixed-priority's starvation failure. Why: greedy has no lookahead, so it can't see that treating `cancer_risk` lights an inflammation fire it will have to put out next, and gets trapped reactively cycling between the two while the other 11 hallmarks — most of which get little or no free collateral benefit from treating either — drift upward largely unchecked.
 
-**Why: greedy has no lookahead, so it can't see that treating `cancer_risk` lights a fire it will have to put out next.** A diagnostic run confirms the mechanism directly — `cancer_risk` receives more doses than any single other hallmark (8 of ~60 doses in a 60-step trace), because every CAR-T dose's CRS-driven inflammation spike promptly makes `inflammation` the new worst node, which greedy then treats, which does nothing to stop `cancer_risk` drifting back up from background aging in the meantime. The two nodes absorb a disproportionate share of greedy's attention while the other 11 — most of which get little or no "free" collateral benefit from treating cancer_risk or inflammation directly — drift upward largely unchecked. `cellular_senescence` is the clean counter-example: it never gets directly dosed at all in the same 60-step trace, because it receives so much incoming coupling from *other* hallmarks' treatments (telomerase `/2`, mitochondrial dysfunction `/4`, genomic instability `/4`, epigenetic alterations `/4`) that it never becomes the worst node in the first place. `telomere_attrition` and `cancer_risk` are the two hallmarks with the least incoming collateral help, which is exactly why they end up the hardest to hold down under continuous load.
+**The uncapped column is the real finding of this round, and it inverts the naive reading of every number above it.** `cancer_risk` (clamped `[0,1]` like every other node) hits exactly 1.000 for four of five policies — the same ceiling-saturation problem flagged in the previous version of this section. Adding `cancer_risk_uncapped` (an unclamped running tally, tracked in parallel, never used for policy decisions) answers the question the clamped number couldn't: **synergy-aware and 2-step lookahead — the two policies with the best burden and final_total — are running up by far the largest true cancer-risk exposure (16-17), roughly 3-7x every other policy's.** Greedy, despite catastrophically failing on general burden, has the *smallest* uncapped cancer-risk tally of all six (2.484) — its failure mode is neglecting everything else, not mismanaging cancer risk specifically; on that one axis it's actually the safest policy in the comparison.
 
-**Synergy-aware avoids the trap by design**: its one-step lookahead literally simulates each candidate intervention and scores it by total system-wide dysfunction change, so a CAR-T dose's inflammation cost is priced into its score *before* it's chosen, not discovered a step later. This is arguably the clearest single argument in the whole model for why naive worst-first scheduling is dangerous once a treatment has a real, priced side effect — not a hypothetical concern, a reproduced one.
+**Why lookahead policies rack up more raw cancer-risk exposure while still "winning" on burden**: they're willing to let `cancer_risk` swing higher between treatments — trading a temporarily worse cancer-risk trajectory for a better whole-system trajectory — and they have the treatment throughput to bring the *visible*, clamped number back down to the ceiling by the time it's measured. The clamp doesn't lie, but it does hide how much larger a debt was run up and paid back versus never run up at all. **Deeper lookahead doesn't uniformly help, either**: 2-step is marginally worse than 1-step on every column here (avg_burden, final_total, and uncapped risk alike) despite being the clear winner in the one-shot regime above — more planning depth optimizes harder for whole-system burden reduction, which in this regime means tolerating *even more* cancer-risk swing than 1-step lookahead already does, for a marginal, arguably not worthwhile, burden improvement.
 
-**Fixed-priority still fails by starving** `mtor` re-dosing (background aging keeps it just above zero, so the fixed-order policy never rotates past it) — a different, but equally real, failure mode from greedy's reactive trap.
+**Fixed-priority still fails by starving** `mtor` re-dosing (background aging keeps it just above zero, so the fixed-order policy never rotates past it) — a different, but equally real, failure mode from greedy's reactive trap. Its uncapped cancer-risk (5.000) sits in the same moderate range as round-robin and random, not at either extreme.
 
-> [!warning] Reading `cancer_risk` at the ceiling honestly
-> `cancer_risk` is now a full hallmark (clamped to `[0, 1]` like every other node), and four of five policies still peg it at exactly 1.000 over a 200-step continuous-aging horizon — only greedy differs (0.900), and for the worst possible reason: it's too busy failing everywhere else to keep dosing it. That means this specific run **cannot distinguish** "synergy-aware's cancer cost" from "fixed-priority's" once both are pegged at the ceiling; it can only tell you whether a policy hit the ceiling at all. An uncapped or cumulative-dose cancer-risk accounting would be the natural next fix if this section gets taken further — flagged here rather than papered over.
->
-> `AGING_RATE` itself is a single uniform constant, not evidence-tiered like the coupling coefficients elsewhere in this model — there is no comparable per-hallmark "background aging rate" literature to draw from. Treat the *qualitative* findings above (ordering matters more under continuous aging; fixed-priority starves; no policy reaches amortal) as the result, not the specific numbers.
+**The honest summary**: no single number in this table tells you "the best policy" — burden-optimal and cancer-risk-conservative are in real tension here, not just in theory, and this run is the first time that tension was actually visible instead of hidden behind a shared ceiling of 1.000.
+
+> [!warning] What's still a simplifying assumption, not a researched parameter
+> `AGING_RATE` is a single uniform constant, not evidence-tiered like the coupling coefficients elsewhere in this model — there is no comparable per-hallmark "background aging rate" literature to draw from yet. `cancer_risk_uncapped` fixes the ceiling-saturation problem but is still built on the same evidence-tiered coupling coefficients as everything else, so its *relative* ranking across policies is more trustworthy than its absolute values. Treat the qualitative findings above (ordering matters more under continuous aging; fixed-priority starves; lookahead policies trade cancer-risk exposure for burden reduction; no policy reaches amortal) as the result, not the specific numbers.
 
 ## Running it
 
