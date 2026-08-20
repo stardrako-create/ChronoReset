@@ -23,7 +23,11 @@ All 12 canonical hallmarks (López-Otín et al. 2023, *Cell*, "Hallmarks of agin
 - **Altered intercellular communication** — narrowed to what's left after chronic inflammation split out as its own hallmark in 2023: thymic involution and endocrine-immune signaling drift, modeled here as GH+DHEA+metformin thymic regeneration (TRIIM-trial-style)
 - **Dysbiosis** — one of the 3 hallmarks added in 2023. Young-donor fecal microbiota transplant / high-diversity microbiome restoration, coupled to inflammation via gut-barrier LPS translocation
 
-Each has an intervention function (rapamycin-style mTOR inhibition, fasting/spermidine-style autophagy induction, anti-inflammatory, telomerase activation, senolytic clearance, NAD+/mitophagy induction, partial reprogramming, chaperone induction, niche-level stem cell signaling, thymic regeneration, fecal microbiota transplant). Interventions don't just move their own node — they nudge coupled nodes, with **coefficients tiered by strength of evidence**, not fitted to data:
+Plus a **13th, non-canonical node**: `cancer_risk`. Not one of López-Otín's 12 — the resource several of the interventions above (telomerase, epigenetic reprogramming, GH-based thymic regeneration) trade against, made directly treatable rather than left as an inert tally:
+
+- **CAR-T therapy** — engineered T-cell infusion targeting accumulated tumor burden. Effectiveness scales with `car_t_fitness` (a side effect boosted by telomerase since the model's first version — Bai et al. 2015 — but never spent on anything until now). Costs a real, sizeable `inflammation` penalty every dose: cytokine release syndrome (CRS) is the expected clinical consequence of CAR-T activation, not a rare edge case (Lee et al. 2014, *Blood*)
+
+Each has an intervention function (rapamycin-style mTOR inhibition, fasting/spermidine-style autophagy induction, anti-inflammatory, telomerase activation, senolytic clearance, NAD+/mitophagy induction, partial reprogramming, chaperone induction, niche-level stem cell signaling, thymic regeneration, fecal microbiota transplant, CAR-T infusion). Interventions don't just move their own node — they nudge coupled nodes, with **coefficients tiered by strength of evidence**, not fitted to data:
 
 | Coefficient | Meaning |
 |---|---|
@@ -48,6 +52,7 @@ Each has an intervention function (rapamycin-style mTOR inhibition, fasting/sper
 - **Proteostasis → stem cell exhaustion (`/4`)**: `Hsf1` deletion directly impairs hematopoietic stem cell maintenance under aging and ex vivo culture stress (Kruta et al. 2021, PMID 34388375) — causal, not correlational, and the strongest single coupling this hallmark has.
 - **Intercellular communication → inflammation (`/4`) and → `cancer_risk` (small, `/8`)**: the TRIIM trial (Fahy et al. 2019, *Aging Cell*) — 9 men, 50-65yo, 12 months of GH+DHEA+metformin — MRI-confirmed thymic regeneration and ~2.5-year epigenetic age reduction across multiple clocks including GrimAge. The inflammation coupling is a plausible mechanism (restored naive T-cell output dampening an oligoclonal repertoire), not directly cytokine-measured in the trial. The cancer-risk penalty mirrors the same GH/IGF-1 axis already in the model via the inverse Laron-syndrome evidence under deregulated nutrient-sensing — same node, opposite intervention direction.
 - **Dysbiosis → inflammation (`/4`) and → mitochondrial dysfunction (`/8`)**: gut barrier dysfunction lets LPS translocate into circulation, driving TLR4/NF-κB systemic inflammation; SCFA/butyrate restoration separately supports colonocyte mitochondrial function. Every positive intervention result here is young-donor-into-aged-recipient FMT — old-donor FMT is not neutral, it actively shortens lifespan in fly/fish models and worsens cognition in rodents.
+- **CAR-T effectiveness scales with `car_t_fitness`, not a flat rate**: telomerase-boosted CAR-T cells expanded ~300x vs 37x and survived ~80% vs near-total death in xenografts (Bai et al. 2015, *Cell Discovery*) — this pillar finally spends the fitness the model has tracked since its first version. Every dose costs a real `inflammation` penalty in return: cytokine release syndrome (CRS) is the expected clinical consequence of CAR-T activation, IL-6/IFN-γ/TNF-α driven, standard-of-care-reversible with tocilizumab (Lee et al. 2014, *Blood*) — not a token side effect.
 
 ## Lifestyle levers on the same nodes (research done, not yet in the model)
 
@@ -67,18 +72,18 @@ While doing this pass, a second, more applied framing kept surfacing: instead of
 
 ## The actual result: does ordering matter?
 
-Five policies, same starting patient, same coupling rules, now with all 12 hallmarks:
+Five policies, same starting patient, same coupling rules, now with all 12 hallmarks plus the CAR-T pillar:
 
 ```
 policy                                  doses    burden  cancer_risk  car_t_fit
-synergy-aware (1-step lookahead)           21    61.356        0.325      0.675
-greedy (worst-first)                       18    69.513        0.275      0.550
-round-robin                                22    71.125        0.338      0.550
-random (seed=0)                            28    85.537        0.388      0.675
-fixed priority (mtor/autophagy first)      29    96.888        0.325      0.675
+synergy-aware (1-step lookahead)           28    70.075        0.000      0.675
+greedy (worst-first)                       20    72.744        0.081      0.550
+round-robin                                25    75.963        0.000      0.550
+random (seed=0)                            31    95.922        0.000      0.550
+fixed priority (mtor/autophagy first)      34   101.187        0.000      0.675
 ```
 
-**Ordering matters more, not less, as the model grows.** The gap between the best policy (synergy-aware, 21 doses) and the worst (fixed-priority, 29 doses) widened compared to the 8-hallmark result — more coupled nodes means more ways to pick badly. Greedy worst-first flips its relative position here: it now has the *fewest* doses of any policy (18, beating synergy-aware's 21) but the second-worst burden of the top three, the opposite tradeoff shape from the 8-hallmark run where it tied synergy-aware on doses. That reversal is itself informative — which policy "wins" depends on which axis you're optimizing for, and that ranking is not stable as the coupling graph gets denser. `cancer_risk` stays in the 0.28-0.39 range across every policy — no policy at 12 hallmarks manages to offset it to zero the way greedy did back when genomic instability was the only cancer-risk-coupled hallmark in the model; the more rejuvenation levers you add, the harder safety gets to buy back with genomic-stability support alone. Round-robin again stays close to greedy on doses despite using zero severity information — a repeated finding across every version of this model so far: the *existence* of the coupling structure does more work than the specific ordering strategy layered on top of it.
+**Making cancer risk directly treatable closes almost all of the safety gap in this regime.** `cancer_risk` drops from a 0.28-0.39 range (12 hallmarks, no CAR-T) to 0.000-0.081 across every policy — four of five reach exactly zero. Greedy is the interesting exception: it still finishes with a small residual (0.081) because it stops the instant every hallmark crosses the 0.1 threshold, and doesn't keep dosing cancer_risk past "good enough" the way the slower policies incidentally do by running more total steps before everything converges together. Doses went up for every policy (greedy 18→20, synergy-aware 21→28) — treating a 13th node costs doses, but here it buys back almost the entire cancer-risk cost from having 12 hallmarks worth of rejuvenation levers active.
 
 ## Continuous aging: is "amortal" even reachable as a maintenance regime?
 
@@ -87,21 +92,23 @@ Everything above answers "can a policy clean up a fixed initial mess?" — it st
 ```
 policy                                  avg_burden  final_total  #>0.1  cancer_risk
 -----------------------------------------------------------------------------------
-synergy-aware (1-step lookahead)             2.242        0.719      3        1.000
-greedy (worst-first)                         2.421        0.744      2        1.000
-random (seed=0)                              4.667        4.325      9        0.938
-round-robin                                  5.472        5.306      9        1.000
-fixed priority (mtor/autophagy first)        8.959        9.000      9        0.000
+synergy-aware (1-step lookahead)             3.295        1.594      3        1.000
+random (seed=0)                              6.520        5.044      9        1.000
+round-robin                                  6.662        6.450      9        1.000
+greedy (worst-first)                         8.744       10.156     13        0.900
+fixed priority (mtor/autophagy first)        9.861       10.000     10        1.000
 ```
 
-**No policy reaches "amortal." The best two (greedy, synergy-aware) hold most hallmarks near threshold but still leave 2-3 of 12 chronically above it, and both drive `cancer_risk` to the ceiling (1.000) doing so.** That's the concrete, model-level version of the tension this project keeps running into: staying young costs safety, and this experiment is the first one where that cost is paid in full, not partially offset the way genomic-instability support could partially offset telomerase's cost in the one-shot version.
+**No policy reaches "amortal" — and adding a treatable cancer pillar made greedy dramatically worse, not better.** This is the single most informative result to come out of this model so far. With 12 hallmarks and no CAR-T pillar, greedy was competitive (2.421 avg burden, 2/12 above threshold). Adding a 13th treatable node — one whose own treatment carries a real `inflammation` cost — flips greedy from second-best to worst-but-one: 8.744 avg burden, **13/13 hallmarks above threshold**, worse than even fixed-priority's starvation failure.
 
-**Round-robin's earlier strength — competitive with greedy despite using zero severity information — collapses under continuous aging** (5.472 avg burden vs. greedy's 2.421, 9/12 hallmarks left above threshold vs. 2/12). The finding from the one-shot comparison ("which hallmark you treat matters less than whether the coupling exists at all") does not survive contact with a maintenance regime — severity-aware policies pull dramatically ahead once damage keeps arriving instead of sitting still to be cleaned up once.
+**Why: greedy has no lookahead, so it can't see that treating `cancer_risk` lights a fire it will have to put out next.** A diagnostic run confirms the mechanism directly — `cancer_risk` receives more doses than any single other hallmark (8 of ~60 doses in a 60-step trace), because every CAR-T dose's CRS-driven inflammation spike promptly makes `inflammation` the new worst node, which greedy then treats, which does nothing to stop `cancer_risk` drifting back up from background aging in the meantime. The two nodes absorb a disproportionate share of greedy's attention while the other 11 — most of which get little or no "free" collateral benefit from treating cancer_risk or inflammation directly — drift upward largely unchecked. `cellular_senescence` is the clean counter-example: it never gets directly dosed at all in the same 60-step trace, because it receives so much incoming coupling from *other* hallmarks' treatments (telomerase `/2`, mitochondrial dysfunction `/4`, genomic instability `/4`, epigenetic alterations `/4`) that it never becomes the worst node in the first place. `telomere_attrition` and `cancer_risk` are the two hallmarks with the least incoming collateral help, which is exactly why they end up the hardest to hold down under continuous load.
 
-**Fixed-priority fails in a genuinely different, more informative way: it starves.** Because background aging guarantees `mtor` is essentially never at exactly zero, and the policy always returns the first non-zero hallmark in its fixed order, it ends up re-dosing `mtor` almost every single step for 200 steps and never rotates to the rest — final burden is nearly maxed (9.0) and `cancer_risk` sits at 0.000 not because the policy is safe, but because it never touches any of the levers that carry a cancer-risk cost. Zero risk here is a symptom of total neglect, not of good scheduling.
+**Synergy-aware avoids the trap by design**: its one-step lookahead literally simulates each candidate intervention and scores it by total system-wide dysfunction change, so a CAR-T dose's inflammation cost is priced into its score *before* it's chosen, not discovered a step later. This is arguably the clearest single argument in the whole model for why naive worst-first scheduling is dangerous once a treatment has a real, priced side effect — not a hypothetical concern, a reproduced one.
 
-> [!warning] Reading `cancer_risk = 1.000` honestly
-> The side-effect accounting (`min(1.0, ...)` clamps in every intervention function) was designed for the short one-shot regime and saturates at the ceiling for any policy that succeeds at long-term maintenance here — three of five policies hit exactly 1.000. That means this specific run **cannot currently distinguish** "greedy's cancer cost" from "synergy-aware's cancer cost" from each other once both are pegged at the ceiling; it can only tell you whether a policy hit the ceiling at all. An uncapped or cumulative-dose cancer-risk accounting would be the natural next fix if this section gets taken further — flagged here rather than papered over.
+**Fixed-priority still fails by starving** `mtor` re-dosing (background aging keeps it just above zero, so the fixed-order policy never rotates past it) — a different, but equally real, failure mode from greedy's reactive trap.
+
+> [!warning] Reading `cancer_risk` at the ceiling honestly
+> `cancer_risk` is now a full hallmark (clamped to `[0, 1]` like every other node), and four of five policies still peg it at exactly 1.000 over a 200-step continuous-aging horizon — only greedy differs (0.900), and for the worst possible reason: it's too busy failing everywhere else to keep dosing it. That means this specific run **cannot distinguish** "synergy-aware's cancer cost" from "fixed-priority's" once both are pegged at the ceiling; it can only tell you whether a policy hit the ceiling at all. An uncapped or cumulative-dose cancer-risk accounting would be the natural next fix if this section gets taken further — flagged here rather than papered over.
 >
 > `AGING_RATE` itself is a single uniform constant, not evidence-tiered like the coupling coefficients elsewhere in this model — there is no comparable per-hallmark "background aging rate" literature to draw from. Treat the *qualitative* findings above (ordering matters more under continuous aging; fixed-priority starves; no policy reaches amortal) as the result, not the specific numbers.
 

@@ -21,7 +21,16 @@ elsewhere (telomerase reactivation especially) is safe or just trades aging
 for cancer sooner. Epigenetic alterations (via partial OSK/OSKM
 reprogramming) carries the model's largest `cancer_risk` coupling on purpose
 -- rejuvenation and tumorigenesis sit on the same dose-response curve for this
-one, not on separate ones -- see `cancer_risk` in the side effects below.
+one, not on separate ones.
+
+`cancer_risk` is a 13th, non-canonical node: not one of López-Otín's 12, but
+the resource several of the interventions above (telomerase, epigenetic
+reprogramming, GH-based thymic regeneration) trade against, made directly
+treatable via `intervene_car_t_therapy` rather than left as an inert tally.
+Its effectiveness scales with `car_t_fitness` (a genuine side effect, boosted
+by telomerase per Bai et al. 2015), and it costs a real, sizeable
+inflammation penalty every dose -- cytokine release syndrome, the expected
+clinical consequence of CAR-T therapy, not a rare edge case.
 
 Coupling coefficients are tiered by strength of evidence, not tuned to data:
   STEP_SIZE/2 -- direct mechanistic coupling or strong human interventional data
@@ -158,7 +167,8 @@ def intervene_telomere_attrition(h: Hallmark, state: PatientState) -> None:
     # small partial-antagonism penalty, not a blocking constraint.
     _nudge(state, "inflammation", +STEP_SIZE / 8)
     # Transient TERT mRNA gave CD19 CAR-T ~300x vs 37x expansion and ~15 extra
-    # population doublings (Bai et al. 2015, Cell Discovery).
+    # population doublings (Bai et al. 2015, Cell Discovery). This is the
+    # resource intervene_car_t_therapy below actually spends.
     state.side_effects["car_t_fitness"] = min(
         1.0, state.side_effects.get("car_t_fitness", 0.0) + STEP_SIZE / 2
     )
@@ -167,9 +177,7 @@ def intervene_telomere_attrition(h: Hallmark, state: PatientState) -> None:
     # promoter-mutant reactivation ~85-90% of human cancers use: the first dose
     # is free, sustained activity is not.
     extra_doses = max(0, state.doses.get("telomere_attrition", 1) - 1)
-    state.side_effects["cancer_risk"] = min(
-        1.0, state.side_effects.get("cancer_risk", 0.0) + extra_doses * STEP_SIZE / 10
-    )
+    _nudge(state, "cancer_risk", extra_doses * STEP_SIZE / 10)
 
 
 def intervene_cellular_senescence(h: Hallmark, state: PatientState) -> None:
@@ -233,9 +241,7 @@ def intervene_epigenetic_alterations(h: Hallmark, state: PatientState) -> None:
     # formation as the functional proof the factors worked at all. Dropping
     # c-MYC and cycling exposure (every study above) reduce but do not remove
     # this; "no gross teratomas observed" in a finite cohort is not "safe."
-    state.side_effects["cancer_risk"] = min(
-        1.0, state.side_effects.get("cancer_risk", 0.0) + STEP_SIZE / 2
-    )
+    _nudge(state, "cancer_risk", STEP_SIZE / 2)
     # Cyclic OSKM in 12-month WT mice improved skeletal-muscle regeneration
     # (PAX7+ satellite cell activation after cardiotoxin injury) and pancreatic
     # beta-cell recovery after induced injury -- a measured functional effect
@@ -265,9 +271,7 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     # for *why* telomerase reactivation can be made safer is pairing it with
     # genomic-stability support, not avoiding telomerase. Deliberately modest:
     # this offsets, it doesn't cancel out repeated telomerase dosing for free.
-    state.side_effects["cancer_risk"] = max(
-        0.0, state.side_effects.get("cancer_risk", 0.0) - STEP_SIZE / 4
-    )
+    _nudge(state, "cancer_risk", -STEP_SIZE / 4)
 
 
 def intervene_proteostasis(h: Hallmark, state: PatientState) -> None:
@@ -320,9 +324,7 @@ def intervene_intercellular_communication(h: Hallmark, state: PatientState) -> N
     # cancer prevalence in matched relatives vs. 1 non-lethal case in the
     # deficient group). Small, context-specific penalty: TRIIM itself was too
     # small and short to detect a cancer signal, but the mechanism is real.
-    state.side_effects["cancer_risk"] = min(
-        1.0, state.side_effects.get("cancer_risk", 0.0) + STEP_SIZE / 8
-    )
+    _nudge(state, "cancer_risk", STEP_SIZE / 8)
 
 
 def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
@@ -343,6 +345,35 @@ def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
     # SCFA/butyrate restoration supports colonocyte mitochondrial function --
     # real but tissue-localized, not organism-wide bioenergetics.
     _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 8)
+
+
+def intervene_car_t_therapy(h: Hallmark, state: PatientState) -> None:
+    """Engineered CAR-T cell infusion targeting accumulated tumor burden.
+    This is the pillar that actually *spends* `car_t_fitness` instead of just
+    tracking it -- every other intervention in this model that raises
+    `cancer_risk` (telomerase, epigenetic reprogramming, GH-based thymic
+    regeneration) has been implicitly betting this pillar would eventually
+    exist to pay it back. `cancer_risk` itself is not one of the 12 canonical
+    hallmarks -- it's the resource-consuming node those other interventions
+    trade against, made directly treatable rather than left as an inert
+    side-effect tally."""
+    # Effectiveness scales with car_t_fitness, not a flat STEP_SIZE: transient
+    # TERT mRNA gave CD19 CAR-T cells ~300x vs 37x expansion and ~80% vs
+    # near-total-death survival in xenografts (Bai et al. 2015, Cell
+    # Discovery) -- telomerase-boosted fitness is a real, measured multiplier
+    # on how much a CAR-T dose actually achieves, not just flavour text.
+    # Baseline fitness (0.3, unboosted) still gives a real but weaker effect;
+    # fully boosted fitness (1.0) gives full STEP_SIZE strength.
+    fitness = state.side_effects.get("car_t_fitness", 0.3)
+    effect = STEP_SIZE * (0.5 + fitness / 2)
+    h.level = max(0.0, h.level - effect)
+    # Cytokine release syndrome (CRS) is not a rare edge case of CAR-T therapy,
+    # it is the expected, extensively documented on-target/off-tumor
+    # inflammatory response -- IL-6-driven, standard of care is tocilizumab
+    # (anti-IL-6R blockade). Modelled as a direct, sizeable inflammation cost
+    # every dose, not a small penalty, because that is what CRS actually is in
+    # clinical CAR-T practice.
+    _nudge(state, "inflammation", STEP_SIZE / 2)
 
 
 # ---- exclusivity rules ---------------------------------------------------
@@ -417,10 +448,15 @@ def build_initial_state() -> PatientState:
             intervention=intervene_dysbiosis,
             label="Dysbiosis",
         ),
+        "cancer_risk": Hallmark(
+            "cancer_risk", level=0.0,
+            intervention=intervene_car_t_therapy,
+            label="Cancer risk",
+        ),
     }
     return PatientState(
         hallmarks=hallmarks,
-        side_effects={"car_t_fitness": 0.3, "cancer_risk": 0.0},
+        side_effects={"car_t_fitness": 0.3},
     )
 
 
@@ -565,7 +601,7 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
             ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
              "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability",
              "epigenetic_alterations", "proteostasis", "stem_cell_exhaustion",
-             "intercellular_communication", "dysbiosis"]
+             "intercellular_communication", "dysbiosis", "cancer_risk"]
         ),
         "random (seed=0)": make_policy_random(0),
     }
@@ -578,7 +614,7 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
             name,
             total_doses,
             state.cumulative_burden,
-            state.side_effects.get("cancer_risk", 0.0),
+            state.hallmarks["cancer_risk"].level,
             state.side_effects.get("car_t_fitness", 0.0),
         ))
 
@@ -666,7 +702,7 @@ def compare_policies_continuous(steps: int = 200, aging_rate: float = AGING_RATE
             ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
              "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability",
              "epigenetic_alterations", "proteostasis", "stem_cell_exhaustion",
-             "intercellular_communication", "dysbiosis"]
+             "intercellular_communication", "dysbiosis", "cancer_risk"]
         ),
         "random (seed=0)": make_policy_random(0),
     }
@@ -682,7 +718,7 @@ def compare_policies_continuous(steps: int = 200, aging_rate: float = AGING_RATE
             avg_burden,
             final_total,
             over,
-            state.side_effects.get("cancer_risk", 0.0),
+            state.hallmarks["cancer_risk"].level,
         ))
 
     header = f"{'policy':<38} {'avg_burden':>11} {'final_total':>12} {'#>0.1':>6} {'cancer_risk':>12}"
@@ -708,7 +744,7 @@ if __name__ == "__main__":
         print(f"  {name}: {count}")
 
     print("\n" + "=" * 60)
-    print("Policy comparison (same initial state, all 12 hallmarks)")
+    print("Policy comparison (same initial state, 12 hallmarks + CAR-T)")
     print("=" * 60)
     compare_policies()
 
