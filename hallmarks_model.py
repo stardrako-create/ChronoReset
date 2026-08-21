@@ -40,6 +40,7 @@ Coupling coefficients are tiered by strength of evidence, not tuned to data:
 
 import copy
 import random
+import statistics
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -157,33 +158,59 @@ def _eligible(state: PatientState) -> list[Hallmark]:
 
 
 def intervene_autophagy_foxo(h: Hallmark, state: PatientState) -> None:
-    """Fasting-mimetic / spermidine / AMPK-FOXO activation."""
-    h.level = max(0.0, h.level - STEP_SIZE)
-    # NOT an antagonism between the two *interventions*: the ULK1 antagonism is
-    # between mTOR activity and autophagy, so AMPK/FOXO activation drives mTOR
-    # down as well. Strongest coupling in the model -- both arms phosphorylate
-    # the same residue set on one shared node.
-    # Kim, Kundu, Viollet & Guan 2011, Nat Cell Biol -- mTORC1 Ser757 vs AMPK
-    # Ser317/555/777 on ULK1.
-    _nudge(state, "mtor", -STEP_SIZE / 2)
-    # Autophagy/mitophagy clears damaged mitochondria, mtDNA and ROS that would
-    # otherwise trigger NLRP3 (Gupta et al. 2025, Immunol Rev); restored flux
-    # also destabilises GATA4, cutting NF-kB-driven SASP (Kang et al. 2015,
-    # Genes & Dev).
-    _nudge(state, "inflammation", -STEP_SIZE / 4)
-    # Mitophagy is a subset of macroautophagy -- same PINK1/Parkin cargo into
-    # canonical autophagosomal machinery (Ryu et al. 2016, Nat Med).
-    _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 4)
-    # FOXO3 is the same molecule Lei et al. 2025 re-engineered for genomic
-    # stability (constitutively-nuclear via AKT-phosphosite knock-in) -- a
-    # weaker, non-engineered FOXO activation plausibly nudges the same axis,
-    # just without the precision of removing only 2 of 3 AKT-controlled
-    # switches. Animal/mechanistic tier, not the primate-trial tier the
-    # dedicated intervention below gets.
-    _nudge(state, "genomic_instability", -STEP_SIZE / 4)
-    # Deliberately no senescence coupling: the autophagy-senescence axis is
-    # sign-ambiguous -- autophagy suppresses senescence onset pre-arrest but is
-    # co-opted to sustain SASP synthesis once senescence is established.
+    """Fasting-mimetic / spermidine / AMPK-FOXO activation. Hormetic, not
+    monotonically beneficial: the calorie-restriction dose-response paradox
+    is well documented across species -- moderate/intermittent CR or fasting
+    gives robust benefit, but severe or *unbroken* chronic restriction shows
+    diminishing returns and real costs (immune and hormonal disruption,
+    reproductive suppression). The precise AMPK-p53 molecular switch behind
+    this is genuinely context/cell-type-dependent, not one clean mechanism --
+    AMPK activation shifts p53 phosphorylation in opposite directions in
+    fibroblasts vs. keratinocytes, for instance -- so this is modelled as a
+    dosing-pattern effect (consecutive same-target doses = unbroken/chronic
+    stress, not intermittent), not a single named pathway flip."""
+    streak = state.policy_state.get("autophagy_streak", 0)
+    streak = streak + 1 if state.last_intervened == h.name else 1
+    state.policy_state["autophagy_streak"] = streak
+
+    if streak <= 2:
+        # Moderate/intermittent stress -- the regime essentially all the
+        # cited mouse/human fasting-mimetic and spermidine evidence in this
+        # model's README was generated under.
+        h.level = max(0.0, h.level - STEP_SIZE)
+        # NOT an antagonism between the two *interventions*: the ULK1 antagonism
+        # is between mTOR activity and autophagy, so AMPK/FOXO activation drives
+        # mTOR down as well. Strongest coupling in the model -- both arms
+        # phosphorylate the same residue set on one shared node.
+        # Kim, Kundu, Viollet & Guan 2011, Nat Cell Biol -- mTORC1 Ser757 vs AMPK
+        # Ser317/555/777 on ULK1.
+        _nudge(state, "mtor", -STEP_SIZE / 2)
+        # Autophagy/mitophagy clears damaged mitochondria, mtDNA and ROS that would
+        # otherwise trigger NLRP3 (Gupta et al. 2025, Immunol Rev); restored flux
+        # also destabilises GATA4, cutting NF-kB-driven SASP (Kang et al. 2015,
+        # Genes & Dev).
+        _nudge(state, "inflammation", -STEP_SIZE / 4)
+        # Mitophagy is a subset of macroautophagy -- same PINK1/Parkin cargo into
+        # canonical autophagosomal machinery (Ryu et al. 2016, Nat Med).
+        _nudge(state, "mitochondrial_dysfunction", -STEP_SIZE / 4)
+        # FOXO3 is the same molecule Lei et al. 2025 re-engineered for genomic
+        # stability (constitutively-nuclear via AKT-phosphosite knock-in) -- a
+        # weaker, non-engineered FOXO activation plausibly nudges the same axis,
+        # just without the precision of removing only 2 of 3 AKT-controlled
+        # switches. Animal/mechanistic tier, not the primate-trial tier the
+        # dedicated intervention below gets.
+        _nudge(state, "genomic_instability", -STEP_SIZE / 4)
+        # Deliberately no senescence coupling: the autophagy-senescence axis is
+        # sign-ambiguous -- autophagy suppresses senescence onset pre-arrest but
+        # is co-opted to sustain SASP synthesis once senescence is established.
+    else:
+        # Hormesis inverts past ~2 consecutive doses with no break: reduced
+        # benefit on its own target, and a real cost appears rather than more
+        # of the same benefit scaling up. This is the "more isn't always
+        # better" curve this model's own Limitations section flagged as
+        # missing.
+        h.level = max(0.0, h.level - STEP_SIZE / 4)
+        _nudge(state, "cellular_senescence", STEP_SIZE / 8)
 
 
 def intervene_mtor(h: Hallmark, state: PatientState) -> None:
@@ -329,7 +356,16 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     """NAD+/PARP-1 support in a DNA-repair-limited context (NR/NA in
     progeroid, repair-deficient mice, PMC9596940) -- distinct emphasis from
     the mitochondrial NAD+ intervention above (repair capacity, not
-    bioenergetics), same shared pool."""
+    bioenergetics), same shared pool. Reinforced by a second, independent
+    mechanism: FOXM1 restoration. FoxM1 is repressed with age; that
+    repression drives mitotic chromosome mis-segregation and
+    aneuploidy-driven senescence, and re-inducing it in aged/progeroid
+    fibroblasts prevents the aneuploidy and ameliorates senescence phenotypes
+    (Ribeiro, Macedo et al. 2018, Nat Commun, PMID 30026603). This was
+    verified specifically because an earlier version of this model flagged a
+    *different*, unverified mTOR-to-FOXM1 speculation -- that specific link
+    did not turn up strong evidence; what does exist is this
+    genomic-stability/senescence mechanism instead, unrelated to mTOR."""
     h.level = max(0.0, h.level - STEP_SIZE)
     # Same shared-pool logic in reverse -- PARP-1 support plausibly helps
     # sirtuin-dependent mitochondrial maintenance too, smaller effect since
@@ -338,8 +374,15 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     # Unresolved DNA damage response signaling (persistent gammaH2AX/53BP1)
     # is the direct trigger for p53/p21-dependent senescence entry -- this
     # hallmark is causally upstream of cellular_senescence, not just
-    # correlated with it.
-    _nudge(state, "cellular_senescence", -STEP_SIZE / 4)
+    # correlated with it. Upgraded from /4 to /2: two independent causal
+    # mechanisms now converge on this same edge -- DDR-driven senescence
+    # entry, and FOXM1-restoration preventing aneuploidy-driven senescence,
+    # the latter now with real mammalian lifespan data behind it (cyclic
+    # truncated-FOXM1 transgene induction significantly extended lifespan in
+    # both Hutchinson-Gilford progeria and naturally aged mice -- Ribeiro,
+    # Macedo et al. 2022, Nature Aging, "FOXM1 delays senescence and extends
+    # lifespan").
+    _nudge(state, "cellular_senescence", -STEP_SIZE / 2)
     # The offsetting term to telomere_attrition's cancer_risk cost. Lei et al.
     # 2025: precise FOXO3 re-engineering gave genomic stability + zero
     # tumorigenicity over 44 weeks in aged primates -- the plausible mechanism
@@ -807,6 +850,73 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
         print(f"{name:<38} {doses:>6} {burden:>9.3f} {cancer_risk:>12.3f} {car_t:>10.3f}")
 
 
+# ---- population variation -------------------------------------------------
+# Every comparison above runs exactly one canonical starting patient --
+# deterministic given a policy. This answers a different question: is a
+# policy's ranking a property of *that one specific patient*, or does it
+# hold up once individuals actually differ? A simple stand-in for individual
+# variation, not a validated population model -- each hallmark's starting
+# level is jittered independently, nothing more structured than that.
+
+
+def build_initial_state_jittered(seed: int | None = None, jitter: float = 0.1) -> PatientState:
+    """Like build_initial_state(), but every hallmark's starting level is
+    perturbed by up to +/-`jitter` (clamped to [0, 1])."""
+    rng = random.Random(seed)
+    state = build_initial_state()
+    for h in state.hallmarks.values():
+        h.level = min(1.0, max(0.0, h.level + rng.uniform(-jitter, jitter)))
+    return state
+
+
+def compare_policies_population(
+    n_patients: int = 20, threshold: float = 0.1, max_steps: int = 80, jitter: float = 0.1
+) -> None:
+    """Run the one-shot comparison across n_patients jittered starting
+    points instead of the one canonical patient, report mean +/- stdev
+    doses and burden per policy. Lookahead policies are deliberately
+    excluded here to keep n_patients runs fast -- see compare_policies()
+    for those."""
+    hallmark_names = list(build_initial_state().hallmarks.keys())
+    policies = {
+        "greedy (worst-first)": policy_greedy,
+        "synergy-aware (1-step lookahead)": policy_synergy_greedy,
+        "round-robin": make_policy_round_robin(hallmark_names),
+        "fixed priority (mtor/autophagy first)": make_policy_fixed_priority(
+            ["mtor", "autophagy_foxo", "inflammation", "telomere_attrition",
+             "cellular_senescence", "mitochondrial_dysfunction", "genomic_instability",
+             "epigenetic_alterations", "proteostasis", "stem_cell_exhaustion",
+             "intercellular_communication", "dysbiosis", "cancer_risk"]
+        ),
+        "random (seed=0)": make_policy_random(0),
+    }
+
+    rows = []
+    for name, policy in policies.items():
+        doses_list, burden_list = [], []
+        for p in range(n_patients):
+            state = run(
+                build_initial_state_jittered(seed=p, jitter=jitter),
+                policy=policy, threshold=threshold, max_steps=max_steps,
+            )
+            doses_list.append(sum(state.doses.values()))
+            burden_list.append(state.cumulative_burden)
+        rows.append((
+            name,
+            statistics.mean(doses_list), statistics.pstdev(doses_list),
+            statistics.mean(burden_list), statistics.pstdev(burden_list),
+        ))
+
+    header = (
+        f"{'policy':<38} {'doses_mean':>11} {'doses_sd':>9} "
+        f"{'burden_mean':>12} {'burden_sd':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+    for name, dm, ds, bm, bs in sorted(rows, key=lambda r: r[3]):
+        print(f"{name:<38} {dm:>11.2f} {ds:>9.2f} {bm:>12.2f} {bs:>10.2f}")
+
+
 # ---- continuous aging (steady-state maintenance) -------------------------
 # `run()` and `compare_policies()` above answer "can a policy clean up a
 # fixed initial mess?" -- they stop the moment every hallmark is under
@@ -836,6 +946,17 @@ def _accrue_aging(state: PatientState, rate: float = AGING_RATE) -> None:
     state.side_effects["cancer_risk_uncapped"] = (
         state.side_effects.get("cancer_risk_uncapped", 0.0) + rate
     )
+    # Persistent dysbiosis is not a neutral, static state the way an
+    # untreated hallmark elsewhere is: a leaky, dysbiotic gut barrier keeps
+    # translocating LPS into circulation every day it's left that way, not
+    # just at the moment it happens to get measured. This is the passive
+    # side of the donor-age asymmetry already documented in the Dysbiosis
+    # vault note (old-donor FMT is actively harmful, not a null
+    # intervention) -- a dysbiosis level left elevated works the same way,
+    # passively, without needing a separate "wrong-direction dose" mechanic.
+    dysbiosis = state.hallmarks.get("dysbiosis")
+    if dysbiosis is not None and dysbiosis.level > 0.5:
+        _nudge(state, "inflammation", rate / 2)
 
 
 def run_continuous(
@@ -953,3 +1074,8 @@ if __name__ == "__main__":
     print("Continuous aging: can a policy hold the line indefinitely?")
     print("=" * 60)
     compare_policies_continuous()
+
+    print("\n" + "=" * 60)
+    print("Population variation: does the ranking hold across patients?")
+    print("=" * 60)
+    compare_policies_population()
