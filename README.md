@@ -108,31 +108,41 @@ fixed priority (mtor/autophagy first)      31    98.447        0.084      0.675
 
 ## Continuous aging: is "amortal" even reachable as a maintenance regime?
 
-Everything above answers "can a policy clean up a fixed initial mess?" — it stops the moment every hallmark is under threshold and never asks what happens next. Real aging doesn't stop: damage keeps accruing while you intervene. `run_continuous()` adds a background `AGING_RATE` (`STEP_SIZE / 10`, applied uniformly to every hallmark every step, treated or not) and runs for a long horizon (200 steps) with no early stop — the question isn't "how many doses to convergence," it's "does the policy hold the line indefinitely, or does damage outpace treatment."
+Everything above answers "can a policy clean up a fixed initial mess?" — it stops the moment every hallmark is under threshold and never asks what happens next. Real aging doesn't stop: damage keeps accruing while you intervene. `run_continuous()` adds a background `AGING_RATE` and runs for a long horizon (200 steps) with no early stop — the question isn't "how many doses to convergence," it's "does the policy hold the line indefinitely, or does damage outpace treatment."
+
+**Background accrual is not a flat rate regardless of treatment history.** A freshly-treated hallmark accrues new damage more slowly for a while, recovering back toward the full baseline rate as more steps pass since it was last treated — modelled as exponential recovery, `effective_rate = AGING_RATE * (1 - exp(-steps_since_dose / RECOVERY_TAU))`, reusing the `steps_since_dose` tracking already built for refractory periods. This isn't an extra assumption stacked on for its own sake: it's the mechanism that makes the model's *own* cyclic-dosing evidence make sense in the first place. Ocampo et al. 2016 and Macip et al. 2024 both validated ON/OFF cyclic protocols over continuous dosing — that only has a reason to work if the OFF period benefits from a temporarily suppressed rate of new damage, not a flat one. Lei et al. 2025 describes its primate result as "slowed multi-organ aging" over 44 weeks — a rate claim, not a one-time level reset — and Ocampo's restored heterochromatin (H3K9me3/H4K20me3) is a structural change that plausibly protects against *future* damage, not just a marker of damage already cleared.
 
 ```
 policy                                  avg_burden  final_total  #>0.1  cancer_risk  uncapped
 -----------------------------------------------------------------------------------------------
-synergy-aware (1-step lookahead)             2.969        1.756      4        1.000    14.028
-2-step lookahead                             3.159        1.844      4        1.000    15.219
-3-step lookahead                             3.765        2.288      5        1.000    13.978
-round-robin                                  6.638        6.275      9        1.000     5.625
-random (seed=0)                              6.822        6.006     10        0.850     4.153
-greedy (worst-first)                         9.232       10.128     12        0.866     2.569
-fixed priority (mtor/autophagy first)        9.895       10.000     10        1.000     5.000
+greedy (worst-first)                         2.077        0.774      3        0.185    -0.631
+synergy-aware (1-step lookahead)             2.184        1.372      2        0.963    11.859
+2-step lookahead                             2.342        1.676      4        0.750    10.552
+3-step lookahead                             2.619        1.954      5        0.000     5.887
+round-robin                                  3.008        1.752      4        1.000     4.023
+random (seed=0)                              4.752        3.642      7        0.857     2.553
+fixed priority (mtor/autophagy first)        8.213        8.000      8        1.000     5.000
 ```
 
-**No policy reaches "amortal."** Adding a 13th treatable node whose own treatment carries a real `inflammation` cost still flips greedy toward near-total failure: 9.232 avg burden, **12/13 hallmarks above threshold**, still worse than fixed-priority's starvation failure. Why: greedy has no lookahead, so it can't see that treating `cancer_risk` lights an inflammation fire it will have to put out next, and gets trapped reactively cycling between the two while the other hallmarks — most of which get little or no free collateral benefit from treating either — drift upward largely unchecked.
+**This flips the model's single biggest prior conclusion: greedy now wins.** Before the recovery mechanic, greedy was the worst-but-one policy under continuous aging (9.232 avg burden, 12/13 hallmarks stuck above threshold) — trapped reactively cycling between `cancer_risk` and the inflammation its own CRS cost lit up, while everything else drifted unchecked. With recovery active, greedy has the *best* avg_burden and final_total of all seven policies, and its uncapped cancer-risk tally goes **negative** (-0.631) — its CAR-T dosing removes more cumulative risk than gets added back over the run.
 
-**Lookahead depth still shows more-is-worse on burden, but the uncapped column is no longer perfectly monotonic.** 1-step (2.969 / 1.756) still clearly beats 2-step (3.159 / 1.844), which still clearly beats 3-step (3.765 / 2.288) on avg_burden and final_total — that part of the finding holds up even after the hormesis and FOXM1 changes reshuffled the underlying dynamics. But on `cancer_risk_uncapped` specifically, 3-step (13.978) actually comes in *below* both 1-step (14.028) and 2-step (15.219) this run — not the clean staircase seen before. Read this as: deeper lookahead reliably costs more burden under continuous aging, but its effect on true cancer-risk exposure is noisier than the burden effect, not a second guaranteed cost stacking on top of the first.
+**Why the flip happens**: greedy's old failure mode was an artifact of treating background accrual as constant. Under a flat rate, greedy's narrow reactive focus meant every hallmark it wasn't currently fixated on drifted upward at full speed the whole time. Under recovery, *any* hallmark greedy visits gets its accrual suppressed for a while afterward, even if greedy doesn't come back to it again soon — so greedy's habit of cycling reactively through whichever node is currently worst turns out to be well-matched to a world where treatment *recency* carries its own value, not just treatment *choice*. Myopic-but-frequent beats far-sighted-but-sparse once staying recently-treated is itself protective.
 
-**The uncapped column remains the real finding of this round.** `cancer_risk` still hits exactly 1.000 for four of seven policies. `cancer_risk_uncapped` answers what the clamped number can't: **all three lookahead-based policies still run up far more true cancer-risk exposure (14.0-15.2) than any non-lookahead policy (2.6-5.6)** — roughly 3-6x more. Greedy, despite catastrophic overall failure, still has the *smallest* uncapped cancer-risk tally of all seven (2.569) — its failure is neglecting everything else, not mismanaging cancer risk specifically.
+**This is `RECOVERY_TAU`-dependent, and there's a real crossover, not a clean universal winner** — checked by re-running the comparison at four different recovery time constants:
 
-**Why lookahead policies rack up more raw cancer-risk exposure while still winning on burden**: they're willing to let `cancer_risk` swing higher between treatments — trading a temporarily worse cancer-risk trajectory for a better whole-system trajectory — and they have the treatment throughput to bring the *visible*, clamped number back to the ceiling by the time it's measured. The clamp doesn't lie, but it hides how much larger a debt was run up and paid back versus never run up at all.
+```
+RECOVERY_TAU     best policy (avg_burden)
+2.0 steps        synergy-aware = 2.371   (greedy = 3.080)
+4.0 steps        greedy = 2.077          (synergy-aware = 2.184)  <- the default used above
+8.0 steps        greedy = 1.503          (synergy-aware = 2.014)
+12.0 steps       greedy = 1.269          (round-robin = 1.836, synergy-aware = 1.938)
+```
 
-**Fixed-priority still fails by starving** `mtor` re-dosing (background aging keeps it just above zero, so the fixed-order policy never rotates past it) — a different, but equally real, failure mode from greedy's reactive trap. Its uncapped cancer-risk (5.000) sits in the same moderate range as round-robin.
+At fast recovery (τ=2, roughly a couple of months if 1 step ≈ 1 month), synergy-aware still wins — treatment choice matters more than recency when the "freshly treated" protection wears off quickly. Past roughly τ≈3 steps, greedy overtakes and its advantage grows with τ; by τ=12, even round-robin (zero severity information at all) beats synergy-aware. **The honest reading**: how much treatment *recency* matters relative to treatment *choice* is itself an empirical question this model can't settle on its own — `RECOVERY_TAU=4.0` was picked to roughly match the model's own refractory-period scale, not fit to real data, so treat the *existence and direction* of the crossover as the finding, not the exact τ where it happens.
 
-**The honest summary**: no single number in this table tells you "the best policy" — burden-optimal and cancer-risk-conservative are in real tension regardless of how far ahead a policy looks, and looking further ahead makes the burden side of that tension worse, not better, even if its effect on cancer-risk exposure specifically is less predictable than that.
+**Fixed-priority still fails regardless of τ** (~8.2 avg burden at every tested value) — its failure is starving most hallmarks entirely by getting stuck re-dosing `mtor`, a different problem that recovery-based accrual suppression doesn't fix, since a hallmark that's never revisited never gets to benefit from the recovery window at all.
+
+**No policy reaches "amortal" even now** — greedy's own final_total (0.774) and #>0.1 (3) mean it still leaves several hallmarks chronically hovering near or above threshold over the 200-step horizon. The finding isn't "the problem is solved," it's "which policy is closest to solving it changes once treatment recency itself has value."
 
 ## Population variation: does the ranking hold across patients?
 
@@ -170,34 +180,34 @@ Every number above lives in this model's own abstract units: `level` in `[0,1]`,
 
 **The one assumption that cannot be validated, and is why every number below is illustrative, not predictive**: there is no way to map this model's `[0, 13]` heuristic burden score onto a real biological-age-acceleration SD scale — it was never fit to biomarker data. `BURDEN_TO_SD` below is treated as a range, not a point estimate: the full `[0, 13]` burden range is assumed to span somewhere **between 1 and 3 SD** of biological-age acceleration, bracketing plausible values from clinical-extreme clock studies (severe frailty/multimorbidity populations commonly show 2–5 SD acceleration).
 
-**Full table, GrimAge as primary clock, across the whole 1–3 SD sensitivity range** (`avg_burden` values from the continuous-aging comparison above; total life expectancy at 65, Portugal anchor):
+**Full table, GrimAge as primary clock, across the whole 1–3 SD sensitivity range** (`avg_burden` values from the continuous-aging comparison above, `RECOVERY_TAU=4.0`; total life expectancy at 65, Portugal anchor). Recomputed after the accrual-recovery mechanic was added — every policy's `avg_burden` dropped substantially, so this table looks meaningfully different from earlier versions, not just re-labeled:
 
 ```
 state                        avg_burden   LE @ SD=1   LE @ SD=2   LE @ SD=3
 healthy reference (HR=1)            —        85.02       85.02       85.02
 model's initial/untreated state   6.950      82.12       79.22       76.32
-synergy-aware (1-step)            2.969      83.78       82.54       81.30
-2-step lookahead                  3.159      83.70       82.38       81.07
-3-step lookahead                  3.765      83.45       81.88       80.31
-round-robin                       6.638      82.25       79.48       76.71
-random (seed=0)                   6.822      82.17       79.33       76.48
-greedy (worst-first)              9.232      81.17       77.31       73.46
-fixed priority                    9.895      80.89       76.76       72.63
+greedy (worst-first)              2.077      84.15       83.29       82.42
+synergy-aware (1-step)            2.184      84.11       83.20       82.29
+2-step lookahead                  2.342      84.04       83.06       82.09
+3-step lookahead                  2.619      83.93       82.83       81.74
+round-robin                       3.008      83.77       82.51       81.25
+random (seed=0)                   4.752      83.04       81.05       79.07
+fixed priority                    8.213      81.59       78.17       74.74
 ```
 
 **What this says, at every SD assumption in the range, not just one:**
 
-- **The best policy beats doing nothing.** Synergy-aware vs. the untreated initial state: +1.66 years (SD=1) to +4.98 years (SD=3) — roughly **+2.0% to +6.5%** of remaining life expectancy at 65, depending on how aggressive the burden→SD assumption is.
-- **Two policies do worse than doing nothing at all.** Greedy and fixed-priority both fall *below* the untreated baseline at every SD level tested — greedy loses 0.95 to 2.86 years relative to never intervening; fixed-priority loses 1.23 to 3.69 years. This is the sharpest, most SD-assumption-independent finding here: a badly-chosen scheduling policy isn't merely suboptimal, it can be actively worse than no policy at all, and that holds whether the underlying SD-equivalence is conservative or aggressive.
-- **The gap between best and worst policy scales directly with the SD assumption**: 2.89 years (SD=1) → 5.78 years (SD=2) → 8.67 years (SD=3). The absolute number is not trustworthy; the fact that *policy choice alone* is worth single-digit years across the entire plausible range is the actual finding.
+- **Six of seven policies now beat doing nothing** — a real change from before the recovery mechanic, when only the top two or three did. Greedy and synergy-aware are essentially tied for best (within 0.1 years of each other at every SD level), both gaining +3.98 to +4.07 years over the untreated baseline at SD=2 (roughly **+5.0% to +5.1%** of remaining life expectancy at 65).
+- **Only fixed-priority still loses to doing nothing** — by a much smaller margin than before, though: -1.05 years at SD=2 (was -2.46 years pre-recovery), because recovery makes the *whole system* more forgiving, including fixed-priority's own failure mode. It's still the one policy where "don't bother" would have been the better call.
+- **The gap between best and worst policy**: 2.56 years (SD=1) → 5.12 years (SD=2) → 7.68 years (SD=3) — similar order of magnitude to the pre-recovery version, but now it's greedy-vs-fixed-priority rather than synergy-aware-vs-fixed-priority, because greedy and synergy-aware essentially swapped places once treatment recency started carrying real value (see the continuous-aging section above for why).
 
-Cross-checking with DunedinPACE's more conservative per-SD HR (1.45 vs. GrimAge's 1.6) compresses every gap by roughly 15–20% but does not change any ranking or sign — the qualitative story (best beats nothing, worst loses to nothing, the spread is real) survives the choice of clock.
+Cross-checking with DunedinPACE's more conservative per-SD HR (1.45 vs. GrimAge's 1.6) compresses every gap by roughly 15–20% but does not change any ranking or sign.
 
 > [!warning] What is real data and what is this section's own assumption, one more time
 > Real and independently checkable: all four clocks' HR/SD, the ~8-year Gompertz doubling time, the Portuguese INE life table. Assumed, and the only weak link: the burden→SD bridge. Treat the *relative* comparisons (policy vs. policy, policy vs. doing nothing) as the finding. Treat any single absolute year or percentage in isolation as illustrative color, not a prediction this model — or any model at this stage of the science — is entitled to make.
 
 > [!warning] What's still a simplifying assumption, not a researched parameter
-> `AGING_RATE` is a single uniform constant, not evidence-tiered like the coupling coefficients elsewhere in this model. A literature pass *did* turn up candidate native-unit background rates for a few hallmarks (telomere attrition ~25-35 bp/year, genomic instability ~40 new somatic mutations/year in sampled adult stem cells, thymic output a ~15.7-year half-life) — but converting incommensurable units (base pairs, mutation counts, an exponential half-life) into one shared `[0,1]` dysfunction scale per hallmark, and doing it in a way that isn't itself a hidden, unvalidated assumption, was judged not worth doing yet: real background aging rate varies enormously person-to-person and by far more factors than the model currently represents, and a differentiated-but-wrong set of constants would be worse than an honestly uniform one. `cancer_risk_uncapped` fixes the ceiling-saturation problem but is still built on the same evidence-tiered coupling coefficients as everything else, so its *relative* ranking across policies is more trustworthy than its absolute values. Treat the qualitative findings above (ordering matters more under continuous aging; fixed-priority starves; lookahead depth trades cancer-risk exposure for burden reduction and gets worse, not better, past 1 step; no policy reaches amortal) as the result, not the specific numbers.
+> `AGING_RATE` is a single uniform constant across hallmarks, not evidence-tiered like the coupling coefficients elsewhere in this model — that part is unchanged. What *did* change: accrual is no longer flat *over time* regardless of treatment history (see `RECOVERY_TAU` above), which is a real, literature-motivated refinement, not a second uniform-constant problem stacked on the first. A literature pass separately turned up candidate native-unit background rates for a few hallmarks (telomere attrition ~25-35 bp/year, genomic instability ~40 new somatic mutations/year in sampled adult stem cells, thymic output a ~15.7-year half-life) — converting incommensurable units into one shared `[0,1]` dysfunction scale per hallmark was judged not worth doing yet, since real background aging rate varies enormously person-to-person and by far more factors than the model currently represents. `RECOVERY_TAU=4.0` has the same status as `AGING_RATE` itself: a reasoned central estimate (matched to the model's own refractory-period scale), checked for sensitivity (τ=2/4/8/12 above), not fit to data. `cancer_risk_uncapped` fixes the ceiling-saturation problem but is still built on the same evidence-tiered coupling coefficients as everything else. Treat the qualitative findings above (recovery-based accrual flips which policy wins under continuous aging; the crossover exists but its exact location is τ-dependent; fixed-priority fails regardless of τ; no policy reaches amortal) as the result, not the specific numbers.
 
 ## Running it
 

@@ -39,6 +39,7 @@ Coupling coefficients are tiered by strength of evidence, not tuned to data:
 """
 
 import copy
+import math
 import random
 import statistics
 from dataclasses import dataclass, field
@@ -931,21 +932,52 @@ def compare_policies_population(
 # AGING_RATE is a deliberately uniform, non-evidence-tiered constant. Unlike
 # the coupling coefficients above, there is no comparable per-hallmark
 # "background aging rate" literature to draw tiers from -- treat this as one
-# simplifying assumption, not a researched parameter, and the single biggest
-# thing to revisit if this section is taken further.
+# simplifying assumption, not a researched parameter.
 AGING_RATE = STEP_SIZE / 10
+
+# Recovery time constant (in steps) for the post-treatment accrual-rate
+# suppression below -- roughly matching the model's own refractory-period
+# scale (2-4 steps for the interventions that have one), not an unrelated
+# new number pulled from nowhere.
+RECOVERY_TAU = 4.0
 
 
 def _accrue_aging(state: PatientState, rate: float = AGING_RATE) -> None:
-    """Every hallmark drifts back up a little each step, whether or not it
-    was this step's target -- the generic, undifferentiated "aging keeps
-    happening" process every treated hallmark is racing against."""
-    for h in state.hallmarks.values():
-        h.level = min(1.0, h.level + rate)
+    """Every hallmark drifts back up each step, treated or not -- but NOT at
+    a flat rate regardless of treatment history. A freshly-treated hallmark
+    accrues new damage more slowly for a while, recovering back toward the
+    full baseline rate as more steps pass since it was last treated.
+
+    This isn't a free extra assumption stacked on top of AGING_RATE -- it's
+    the mechanism that makes the model's own cyclic-dosing evidence make
+    sense in the first place. Ocampo et al. 2016 and Macip et al. 2024 both
+    validated ON/OFF cyclic protocols (2 days on/5 off; 1 week on/1 off) over
+    continuous dosing; that only has a reason to work if the OFF period
+    benefits from a temporarily suppressed rate of new damage, not a flat
+    one. Lei et al. 2025 describes its primate result as "slowed multi-organ
+    aging" over 44 weeks -- a rate claim, not just a one-time level reset --
+    and Ocampo's restored heterochromatin (H3K9me3/H4K20me3) is a structural
+    change that plausibly protects against *future* damage, not only a
+    marker of damage already cleared.
+
+    Modelled as exponential recovery using steps_since_dose (already tracked
+    for REFRACTORY_STEPS, reused here rather than adding a parallel state):
+    effective_rate = rate * (1 - exp(-steps_since_dose / RECOVERY_TAU)).
+    Right after treatment (steps_since_dose=0), effective_rate is ~0; it
+    rises back toward the full baseline rate as treatment recedes into the
+    past. A hallmark that has never been treated accrues at the full rate
+    always -- there is no rejuvenation event to suppress it."""
+    for name, h in state.hallmarks.items():
+        since = state.steps_since_dose.get(name, 10**9)
+        effective_rate = rate * (1.0 - math.exp(-since / RECOVERY_TAU))
+        h.level = min(1.0, h.level + effective_rate)
     # Keep the uncapped cancer_risk tally consistent with the clamped level:
-    # background aging pushes it up here too, just like every other hallmark.
+    # background aging pushes it up here too, just like every other hallmark,
+    # at the same recovery-adjusted rate.
+    cancer_risk_since = state.steps_since_dose.get("cancer_risk", 10**9)
+    cancer_risk_rate = rate * (1.0 - math.exp(-cancer_risk_since / RECOVERY_TAU))
     state.side_effects["cancer_risk_uncapped"] = (
-        state.side_effects.get("cancer_risk_uncapped", 0.0) + rate
+        state.side_effects.get("cancer_risk_uncapped", 0.0) + cancer_risk_rate
     )
     # Persistent dysbiosis is not a neutral, static state the way an
     # untreated hallmark elsewhere is: a leaky, dysbiotic gut barrier keeps
