@@ -149,6 +149,53 @@ fixed priority (mtor/autophagy first)        33.35      1.98        98.98       
 
 **The one-shot ranking holds up.** Synergy-aware still wins on burden, greedy still wins on doses, fixed-priority still loses on both — across 20 different starting patients, not just the one canonical starting point every other table in this README uses. Standard deviations are modest relative to the means (roughly 5-10% coefficient of variation on burden) — individual variation shifts the exact numbers but doesn't scramble which policy is better than which. Lookahead-depth policies (2-step, 3-step) are deliberately excluded here to keep 20-patient runs fast; see `compare_policies()` for those on the single canonical patient.
 
+## Illustrative translation: burden → life expectancy (not validated — read this before quoting any number from it)
+
+Every number above lives in this model's own abstract units: `level` in `[0,1]`, no calendar-time conversion, no epidemiological calibration. This section asks a harder, much less certain question — "what might a policy's `avg_burden` under continuous aging roughly correspond to in years of human life expectancy?" — using real published data at every step except one, which is flagged explicitly.
+
+**Three real, checkable inputs, not assumptions:**
+
+1. **Per-SD all-cause mortality hazard ratios from four independent aging clocks** — used together, not one alone, so the spread across methods is visible:
+
+   | Clock | HR per SD | Source |
+   |---|---|---|
+   | GrimAge | 1.47–1.81 (used: 1.6) | Lothian Birth Cohort 1936; ESTHER cohort |
+   | DunedinPACE | 1.26–1.65 (used: 1.45) | Belsky et al. 2022, *eLife* — NAS and Framingham Offspring cohorts |
+   | PhenoAge | ~1.5 (converted from ~9%/year) | Levine et al. 2018 |
+   | Frailty Index | ~1.3 (converted from HR ~1.04/0.01 unit) | meta-analyses, *Age and Ageing* |
+
+2. **Human mortality-rate doubling time ≈ 8 years** — Gompertz's law, one of the most consistently replicated facts in human demography (estimates across sources range 8–10 years post-midlife; 8 is the most commonly cited). This converts a hazard ratio directly into an "equivalent age-shift": `Δage_years = log2(HR) × 8`.
+
+3. **Real remaining life expectancy at 65** — Portugal, INE (*Instituto Nacional de Estatística*), 2022–2024 triennium: **20.02 years** (18.30 men, 21.35 women), giving a **total life expectancy at 65 of 85.02 years** for a healthy (zero-burden) reference. (US SSA gives 18.8 years / 83.8 total for comparison — the qualitative findings below don't depend on which country's table is used, only the absolute anchor shifts by ~1.2 years.)
+
+**The one assumption that cannot be validated, and is why every number below is illustrative, not predictive**: there is no way to map this model's `[0, 13]` heuristic burden score onto a real biological-age-acceleration SD scale — it was never fit to biomarker data. `BURDEN_TO_SD` below is treated as a range, not a point estimate: the full `[0, 13]` burden range is assumed to span somewhere **between 1 and 3 SD** of biological-age acceleration, bracketing plausible values from clinical-extreme clock studies (severe frailty/multimorbidity populations commonly show 2–5 SD acceleration).
+
+**Full table, GrimAge as primary clock, across the whole 1–3 SD sensitivity range** (`avg_burden` values from the continuous-aging comparison above; total life expectancy at 65, Portugal anchor):
+
+```
+state                        avg_burden   LE @ SD=1   LE @ SD=2   LE @ SD=3
+healthy reference (HR=1)            —        85.02       85.02       85.02
+model's initial/untreated state   6.950      82.12       79.22       76.32
+synergy-aware (1-step)            2.969      83.78       82.54       81.30
+2-step lookahead                  3.159      83.70       82.38       81.07
+3-step lookahead                  3.765      83.45       81.88       80.31
+round-robin                       6.638      82.25       79.48       76.71
+random (seed=0)                   6.822      82.17       79.33       76.48
+greedy (worst-first)              9.232      81.17       77.31       73.46
+fixed priority                    9.895      80.89       76.76       72.63
+```
+
+**What this says, at every SD assumption in the range, not just one:**
+
+- **The best policy beats doing nothing.** Synergy-aware vs. the untreated initial state: +1.66 years (SD=1) to +4.98 years (SD=3) — roughly **+2.0% to +6.5%** of remaining life expectancy at 65, depending on how aggressive the burden→SD assumption is.
+- **Two policies do worse than doing nothing at all.** Greedy and fixed-priority both fall *below* the untreated baseline at every SD level tested — greedy loses 0.95 to 2.86 years relative to never intervening; fixed-priority loses 1.23 to 3.69 years. This is the sharpest, most SD-assumption-independent finding here: a badly-chosen scheduling policy isn't merely suboptimal, it can be actively worse than no policy at all, and that holds whether the underlying SD-equivalence is conservative or aggressive.
+- **The gap between best and worst policy scales directly with the SD assumption**: 2.89 years (SD=1) → 5.78 years (SD=2) → 8.67 years (SD=3). The absolute number is not trustworthy; the fact that *policy choice alone* is worth single-digit years across the entire plausible range is the actual finding.
+
+Cross-checking with DunedinPACE's more conservative per-SD HR (1.45 vs. GrimAge's 1.6) compresses every gap by roughly 15–20% but does not change any ranking or sign — the qualitative story (best beats nothing, worst loses to nothing, the spread is real) survives the choice of clock.
+
+> [!warning] What is real data and what is this section's own assumption, one more time
+> Real and independently checkable: all four clocks' HR/SD, the ~8-year Gompertz doubling time, the Portuguese INE life table. Assumed, and the only weak link: the burden→SD bridge. Treat the *relative* comparisons (policy vs. policy, policy vs. doing nothing) as the finding. Treat any single absolute year or percentage in isolation as illustrative color, not a prediction this model — or any model at this stage of the science — is entitled to make.
+
 > [!warning] What's still a simplifying assumption, not a researched parameter
 > `AGING_RATE` is a single uniform constant, not evidence-tiered like the coupling coefficients elsewhere in this model. A literature pass *did* turn up candidate native-unit background rates for a few hallmarks (telomere attrition ~25-35 bp/year, genomic instability ~40 new somatic mutations/year in sampled adult stem cells, thymic output a ~15.7-year half-life) — but converting incommensurable units (base pairs, mutation counts, an exponential half-life) into one shared `[0,1]` dysfunction scale per hallmark, and doing it in a way that isn't itself a hidden, unvalidated assumption, was judged not worth doing yet: real background aging rate varies enormously person-to-person and by far more factors than the model currently represents, and a differentiated-but-wrong set of constants would be worse than an honestly uniform one. `cancer_risk_uncapped` fixes the ceiling-saturation problem but is still built on the same evidence-tiered coupling coefficients as everything else, so its *relative* ranking across policies is more trustworthy than its absolute values. Treat the qualitative findings above (ordering matters more under continuous aging; fixed-priority starves; lookahead depth trades cancer-risk exposure for burden reduction and gets worse, not better, past 1 step; no policy reaches amortal) as the result, not the specific numbers.
 
