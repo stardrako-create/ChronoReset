@@ -76,6 +76,10 @@ class PatientState:
     # a discrete proxy for "total patient burden over time" (lower is better,
     # independent of how many steps convergence took)
     cumulative_burden: float = 0.0
+    # steps elapsed since each hallmark was last dosed -- feeds
+    # REFRACTORY_STEPS below. Absent key means "never dosed", treated as a
+    # large number so a never-dosed hallmark is never refractory-blocked.
+    steps_since_dose: dict[str, int] = field(default_factory=dict)
 
 
 STEP_SIZE = 0.25
@@ -102,6 +106,47 @@ def _nudge_cancer_risk(state: PatientState, delta: float) -> None:
     state.side_effects["cancer_risk_uncapped"] = (
         state.side_effects.get("cancer_risk_uncapped", 0.0) + delta
     )
+
+
+# Minimum steps between doses of the same intervention, for the interventions
+# whose underlying evidence explicitly describes non-continuous dosing --
+# single-administration gene therapy, a manufactured cell product with
+# measured long-term persistence, or a literal cyclic ON/OFF protocol -- not
+# applied to every hallmark, because most of the underlying evidence here
+# (rapamycin, senolytics, anti-inflammatories, FMT) doesn't specify a hard
+# redosing constraint the way these three do. This is a translation of a
+# real-world constraint into abstract model steps, not a calendar-time claim
+# -- the model has no explicit step-to-days/weeks conversion.
+REFRACTORY_STEPS: dict[str, int] = {
+    # Bernardes de Jesus et al. 2012: a single AAV9-TERT injection, not a
+    # repeatable pill -- the mouse studies behind this intervention never
+    # redosed.
+    "telomere_attrition": 4,
+    # Amor et al. 2024, Nature Aging: anti-uPAR senolytic CAR-T persisted
+    # long-term (>1 year) in aged mice after a single administration --
+    # re-infusing weekly has no basis in the underlying evidence.
+    "cancer_risk": 3,
+    # Ocampo et al. 2016 / Macip et al. 2024: cyclic OSK(M) reprogramming is
+    # explicitly dosed ON/OFF (2 days on/5 off; 1 week on/1 week off), not
+    # continuously -- a hard minimum interval reflects the OFF half of that
+    # cycle.
+    "epigenetic_alterations": 2,
+}
+
+
+def _eligible(state: PatientState) -> list[Hallmark]:
+    """Hallmarks that are both above zero and outside their refractory
+    period (if any). Every policy filters through this instead of inlining
+    its own `level > 0.0` check, so the refractory rule applies uniformly."""
+    eligible = []
+    for h in state.hallmarks.values():
+        if h.level <= 0.0:
+            continue
+        limit = REFRACTORY_STEPS.get(h.name, 0)
+        if limit and state.steps_since_dose.get(h.name, 10**9) < limit:
+            continue
+        eligible.append(h)
+    return eligible
 
 
 # ---- intervention functions -------------------------------------------
@@ -194,7 +239,13 @@ def intervene_telomere_attrition(h: Hallmark, state: PatientState) -> None:
 
 
 def intervene_cellular_senescence(h: Hallmark, state: PatientState) -> None:
-    """Senolytic D+Q / fisetin -- clears the senescent-cell burden."""
+    """Senolytic clearance -- D+Q/fisetin, or anti-uPAR CAR-T (Amor et al.
+    2024, Nature Aging), a mechanistically distinct route to the same
+    endpoint: uPAR-positive senescent cells cleared by an engineered,
+    long-persisting CAR-T product rather than a small molecule. Not the same
+    intervention as `intervene_car_t_therapy` (tumor-directed CD19/BCMA/CD30
+    CAR-T) -- conflating the two would combine effects that can point in
+    opposite directions on genomic instability and inflammation."""
     # "Hit-and-run": senolytics transiently push senescent cells past an
     # apoptotic threshold, so a back-to-back dose clears little extra before the
     # burden rebuilds (Xu et al. 2018, Nat Med; Justice et al. 2019, 3-days-on/
@@ -205,6 +256,17 @@ def intervene_cellular_senescence(h: Hallmark, state: PatientState) -> None:
     # Best human evidence linking any two hallmarks here: 3 days of D+Q cut
     # circulating IL-1a, IL-6, MMP-9/12 within 11 days (Hickson et al. 2019).
     _nudge(state, "inflammation", -STEP_SIZE / 2)
+    # Eskiocak et al. 2026, Nature Aging: therapeutic anti-uPAR CAR-T in
+    # 18-month mice increased intestinal stem cell number/proliferation and
+    # restored aged-crypt organoid-forming capacity -- a measured functional
+    # rescue, not a biomarker proxy, specific to the CAR-T route (D+Q was not
+    # tested for this endpoint in that study).
+    _nudge(state, "stem_cell_exhaustion", -STEP_SIZE / 4)
+    # Same paper: microbiome composition shifted toward a more youthful
+    # configuration alongside the intestinal barrier/stem-cell rescue --
+    # context-specific to this gut-focused intervention, not a general
+    # senescence-clearance-lowers-dysbiosis claim.
+    _nudge(state, "dysbiosis", -STEP_SIZE / 8)
     # No reverse coupling to telomere_attrition: clearing senescent cells does
     # not lengthen telomeres in the surviving population.
 
@@ -308,28 +370,51 @@ def intervene_proteostasis(h: Hallmark, state: PatientState) -> None:
 def intervene_stem_cell_exhaustion(h: Hallmark, state: PatientState) -> None:
     """Niche-level rejuvenation -- PGE2-EP4 signaling restoring aged muscle
     stem cell chromatin accessibility and cell-cycle re-entry (Cell Stem Cell
-    2025), exercise-driven satellite cell activation. Not stem cell transplant,
-    a distinct and far more invasive intervention category not modeled here."""
+    2025), exercise-driven satellite cell activation, or transplant of
+    pharmacologically rejuvenated aged HSCs (Montserrat-Vazquez et al. 2022,
+    npj Regen Med: CASIN-rejuvenated aged HSCs into aged immunocompromised
+    mice gave +24.8% median / +34.0% max lifespan vs. untreated-aged-HSC
+    recipients -- the first genuine mammalian lifespan endpoint this hallmark
+    had). Not naive/unrejuvenated stem cell transplant, a distinct and far
+    more invasive category not modeled here."""
     h.level = max(0.0, h.level - STEP_SIZE)
     # Restoring a functional niche overlaps with clearing the senescent
     # supporting cells that disrupt it -- partial, context-specific, not the
     # direct human-RCT tier of the senolytic->inflammation coupling elsewhere.
     _nudge(state, "cellular_senescence", -STEP_SIZE / 8)
+    # Zhang et al. 2017 (Nature): hypothalamic Sox2/Bmi1+ stem/progenitor
+    # cells control organism-wide aging speed partly via exosomal microRNAs
+    # released into cerebrospinal fluid -- ablation shortened, engineered
+    # implantation extended, mouse lifespan (n=23 vs 21 in the key survival
+    # comparison). This is an experimentally addressed mechanism, not a
+    # correlation, and it is literally an intercellular-communication
+    # pathway -- the two hallmarks share this mechanistic bridge.
+    _nudge(state, "intercellular_communication", -STEP_SIZE / 4)
 
 
 def intervene_intercellular_communication(h: Hallmark, state: PatientState) -> None:
     """GH + DHEA + metformin thymic regeneration, TRIIM-trial-style (Fahy
     et al. 2019) -- the endocrine-immune signaling axis left over once
     inflammaging split out as its own hallmark (chronic_inflammation) in the
-    2023 revision."""
+    2023 revision. Human anchor for *why this axis matters* is no longer just
+    TRIIM: Kooshesh et al. 2023 (NEJM, 1,420 thymectomy patients vs. 6,021
+    controls, 1,146 matched) found 5-year mortality 8.1% vs 2.8% (RR 2.9) and
+    cancer incidence 7.4% vs 3.7% (RR 2.0) after adult thymus removal, and
+    Bernatz et al. 2026 (Nature, >27,000 adults across NLST/Framingham) found
+    higher CT-derived thymic health associated with markedly lower long-term
+    mortality. Both are association/removal evidence, not a randomized
+    regeneration trial -- TRIIM remains the only interventional human data,
+    kept as hypothesis-generating rather than the node's main anchor."""
     h.level = max(0.0, h.level - STEP_SIZE)
     # TRIIM: 9 men, 50-65yo, 12 months of GH+DHEA+metformin -- MRI-confirmed
     # thymic fat-to-lymphoid regeneration, epigenetic age reduced ~2.5 years
     # across multiple clocks including GrimAge (Fahy et al. 2019, Aging Cell).
-    # A regenerated thymus restoring naive T-cell output plausibly dampens the
-    # oligoclonal, pro-inflammatory repertoire aging leaves behind -- causal
-    # narrative is established, but TRIIM measured epigenetic age and thymic
-    # imaging, not inflammatory cytokines directly, hence /4 not /2.
+    # Kanemaru et al. 2026 (Nat Commun) adds a causal mouse mechanism for the
+    # same direction: thymulin, a thymus-derived peptide falling with age,
+    # suppresses NF-kB-driven myeloid inflammation via heterochronic
+    # parabiosis/chimera experiments, with supporting human PBMC data.
+    # TRIIM itself measured epigenetic age and thymic imaging, not
+    # inflammatory cytokines directly, hence /4 not /2.
     _nudge(state, "inflammation", -STEP_SIZE / 4)
     # GH is proliferative and raises IGF-1; the model already treats elevated
     # IGF-1/GH signaling as a cancer-risk driver via the inverse finding cited
@@ -338,6 +423,15 @@ def intervene_intercellular_communication(h: Hallmark, state: PatientState) -> N
     # deficient group). Small, context-specific penalty: TRIIM itself was too
     # small and short to detect a cancer signal, but the mechanism is real.
     _nudge_cancer_risk(state, STEP_SIZE / 8)
+    # Partial, more conservative offset in the other direction: Kooshesh et
+    # al. 2023 found thymectomy (i.e. *removing* thymic function) roughly
+    # doubled cancer incidence, implying restored thymic output plausibly
+    # protects via immunosurveillance -- but that's inferred from a removal
+    # study, not demonstrated by an addition/regeneration study, so it is
+    # weighted smaller than the GH-driven cost above rather than cancelling
+    # it outright. Both mechanisms are real and coexist in the same GH-based
+    # intervention; modelling only the cost side would be one-sided.
+    _nudge_cancer_risk(state, -STEP_SIZE / 16)
 
 
 def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
@@ -361,14 +455,16 @@ def intervene_dysbiosis(h: Hallmark, state: PatientState) -> None:
 
 
 def intervene_car_t_therapy(h: Hallmark, state: PatientState) -> None:
-    """Engineered CAR-T cell infusion targeting accumulated tumor burden.
-    This is the pillar that actually *spends* `car_t_fitness` instead of just
-    tracking it -- every other intervention in this model that raises
-    `cancer_risk` (telomerase, epigenetic reprogramming, GH-based thymic
-    regeneration) has been implicitly betting this pillar would eventually
-    exist to pay it back. `cancer_risk` itself is not one of the 12 canonical
-    hallmarks -- it's the resource-consuming node those other interventions
-    trade against, made directly treatable rather than left as an inert
+    """Tumor-directed CAR-T (CD19/BCMA/CD30-style) targeting accumulated
+    cancer burden -- deliberately distinct from the anti-uPAR *senolytic*
+    CAR-T modelled in `intervene_cellular_senescence`. This is the pillar
+    that actually *spends* `car_t_fitness` instead of just tracking it --
+    every other intervention in this model that raises `cancer_risk`
+    (telomerase, epigenetic reprogramming, GH-based thymic regeneration) has
+    been implicitly betting this pillar would eventually exist to pay it
+    back. `cancer_risk` itself is not one of the 12 canonical hallmarks --
+    it's the resource-consuming node those other interventions trade
+    against, made directly treatable rather than left as an inert
     side-effect tally."""
     # Effectiveness scales with car_t_fitness, not a flat STEP_SIZE: transient
     # TERT mRNA gave CD19 CAR-T cells ~300x vs 37x expansion and ~80% vs
@@ -389,7 +485,27 @@ def intervene_car_t_therapy(h: Hallmark, state: PatientState) -> None:
     # (anti-IL-6R blockade). Modelled as a direct, sizeable inflammation cost
     # every dose, not a small penalty, because that is what CRS actually is in
     # clinical CAR-T practice.
-    _nudge(state, "inflammation", STEP_SIZE / 2)
+    crs_cost = STEP_SIZE / 2
+    # Pre-existing clonal hematopoiesis raises CRS severity: 15/62 CAR-T
+    # patients carried pathogenic CH mutations, and grade >=2 CRS occurred in
+    # 60% of CH-carriers vs 28% without (OR 3.9, Goldsmith et al. 2024,
+    # Transplant Cell Ther, n=62) -- a real, if modest-cohort, state-dependent
+    # toxicity effect, not a fixed penalty independent of host state.
+    if state.hallmarks["genomic_instability"].level > 0.3:
+        crs_cost += STEP_SIZE / 8
+    _nudge(state, "inflammation", crs_cost)
+    # The reverse direction: conventional CAR-T can accelerate pre-existing or
+    # incipient clonal hematopoiesis. Kapadia et al. 2024 (Cytotherapy, n=26,
+    # 154 longitudinal samples): CH clones starting below 1% VAF expanded
+    # ~3.37x after CD30 CAR-T vs ~1.20x for larger clones (p=0.0014). Ben
+    # Khelil et al. 2025 (Sci Transl Med) showed CAR-T-driven bone-marrow
+    # inflammation, not lymphodepletion alone, was required to reproduce the
+    # phenotype in immunocompetent mice. This is expansion/selection of
+    # existing abnormal clones, not proof CAR-T mutagenizes the host --
+    # deliberately modest (/8) and context-general, since the underlying
+    # evidence is specifically hematologic-malignancy CAR-T, not this
+    # pillar's broader generic use.
+    _nudge(state, "genomic_instability", STEP_SIZE / 8)
 
 
 # ---- exclusivity rules ---------------------------------------------------
@@ -486,7 +602,7 @@ def build_initial_state() -> PatientState:
 
 def policy_greedy(state: PatientState) -> Hallmark | None:
     """Always treat whichever hallmark is currently worst. No lookahead."""
-    candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+    candidates = _eligible(state)
     if not candidates:
         return None
 
@@ -509,7 +625,7 @@ def policy_synergy_greedy(state: PatientState) -> Hallmark | None:
     natural counter-hypothesis to policy_greedy -- it can pick a hallmark
     that isn't the worst one, if treating it drags others down for free
     (e.g. autophagy_foxo pulls three other nodes down at once)."""
-    candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+    candidates = _eligible(state)
     if not candidates:
         return None
 
@@ -537,7 +653,7 @@ def make_policy_lookahead(depth: int) -> Callable[[PatientState], "Hallmark | No
     at the cost of branching-factor^depth simulations per real decision."""
 
     def best_score(state: PatientState, remaining: int) -> float:
-        candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+        candidates = _eligible(state)
         if not candidates or remaining == 0:
             return 0.0
         best = float("-inf")
@@ -552,7 +668,7 @@ def make_policy_lookahead(depth: int) -> Callable[[PatientState], "Hallmark | No
         return best
 
     def policy(state: PatientState) -> Hallmark | None:
-        candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+        candidates = _eligible(state)
         if not candidates:
             return None
         best_h, best_score_val = None, float("-inf")
@@ -576,7 +692,7 @@ def make_policy_round_robin(order: list[str]) -> Callable[[PatientState], "Hallm
     even help, or does treating everything equally do just as well?"""
 
     def policy(state: PatientState) -> Hallmark | None:
-        candidates = {h.name for h in state.hallmarks.values() if h.level > 0.0}
+        candidates = {h.name for h in _eligible(state)}
         if not candidates:
             return None
         idx = state.policy_state.get("round_robin_idx", 0)
@@ -597,10 +713,10 @@ def make_policy_fixed_priority(order: list[str]) -> Callable[[PatientState], "Ha
     downstream."""
 
     def policy(state: PatientState) -> Hallmark | None:
+        eligible = {h.name for h in _eligible(state)}
         for name in order:
-            h = state.hallmarks.get(name)
-            if h is not None and h.level > 0.0:
-                return h
+            if name in eligible:
+                return state.hallmarks[name]
         return None
 
     return policy
@@ -612,7 +728,7 @@ def make_policy_random(seed: int) -> Callable[[PatientState], "Hallmark | None"]
     rng = random.Random(seed)
 
     def policy(state: PatientState) -> Hallmark | None:
-        candidates = [h for h in state.hallmarks.values() if h.level > 0.0]
+        candidates = _eligible(state)
         if not candidates:
             return None
         return rng.choice(candidates)
@@ -633,12 +749,16 @@ def run(
             state.log.append(f"Step {step}: all hallmarks at/under target ({threshold}). Done.")
             break
 
+        for name in state.hallmarks:
+            state.steps_since_dose[name] = state.steps_since_dose.get(name, 10**9) + 1
+
         target = policy(state)
         if target is None:
             break
 
         before = target.level
         state.doses[target.name] = state.doses.get(target.name, 0) + 1
+        state.steps_since_dose[target.name] = 0
         target.intervention(target, state)
         state.last_intervened = target.name
         state.log.append(
@@ -665,6 +785,7 @@ def compare_policies(threshold: float = 0.1, max_steps: int = 80) -> None:
         ),
         "random (seed=0)": make_policy_random(0),
         "2-step lookahead": make_policy_lookahead(2),
+        "3-step lookahead": make_policy_lookahead(3),
     }
 
     rows = []
@@ -732,12 +853,16 @@ def run_continuous(
         _accrue_aging(state, aging_rate)
         state.cumulative_burden += sum(h.level for h in state.hallmarks.values())
 
+        for name in state.hallmarks:
+            state.steps_since_dose[name] = state.steps_since_dose.get(name, 10**9) + 1
+
         target = policy(state)
         if target is None:
             break
 
         before = target.level
         state.doses[target.name] = state.doses.get(target.name, 0) + 1
+        state.steps_since_dose[target.name] = 0
         target.intervention(target, state)
         state.last_intervened = target.name
         if step <= 5 or step % 20 == 0:
@@ -774,6 +899,7 @@ def compare_policies_continuous(steps: int = 200, aging_rate: float = AGING_RATE
     }
 
     policies["2-step lookahead"] = make_policy_lookahead(2)
+    policies["3-step lookahead"] = make_policy_lookahead(3)
 
     rows = []
     for name, policy in policies.items():
