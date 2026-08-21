@@ -361,7 +361,7 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     repression drives mitotic chromosome mis-segregation and
     aneuploidy-driven senescence, and re-inducing it in aged/progeroid
     fibroblasts prevents the aneuploidy and ameliorates senescence phenotypes
-    (Ribeiro, Macedo et al. 2018, Nat Commun, PMID 30026603). This was
+    (Macedo, Ribeiro et al. 2018, Nat Commun 9:2834, PMID 30026603). This was
     verified specifically because an earlier version of this model flagged a
     *different*, unverified mTOR-to-FOXM1 speculation -- that specific link
     did not turn up strong evidence; what does exist is this
@@ -380,8 +380,9 @@ def intervene_genomic_instability(h: Hallmark, state: PatientState) -> None:
     # the latter now with real mammalian lifespan data behind it (cyclic
     # truncated-FOXM1 transgene induction significantly extended lifespan in
     # both Hutchinson-Gilford progeria and naturally aged mice -- Ribeiro,
-    # Macedo et al. 2022, Nature Aging, "FOXM1 delays senescence and extends
-    # lifespan").
+    # Macedo et al. 2022, Nature Aging, "In vivo cyclic induction of the
+    # FOXM1 transcription factor delays natural and progeroid aging
+    # phenotypes and extends healthspan", PMID 37118067).
     _nudge(state, "cellular_senescence", -STEP_SIZE / 2)
     # The offsetting term to telomere_attrition's cancer_risk cost. Lei et al.
     # 2025: precise FOXO3 re-engineering gave genomic stability + zero
